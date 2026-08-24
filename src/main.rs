@@ -1,3 +1,7 @@
-fn main() {
-    println!("Hello, world!");
+mod app;
+
+use windows::core::Result;
+
+fn main() -> Result<()> {
+    app::run()
 }
