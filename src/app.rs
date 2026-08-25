@@ -1,11 +1,11 @@
+mod com;
+
+use crate::app::com::ComApartment;
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
         Graphics::Gdi::{BeginPaint, COLOR_WINDOW, EndPaint, HBRUSH, PAINTSTRUCT, UpdateWindow},
-        System::{
-            Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
-            LibraryLoader::GetModuleHandleW,
-        },
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
             WindowsAndMessaging::{
@@ -19,25 +19,8 @@ use windows::{
     core::{Result, w},
 };
 
-struct InitGuard;
-
-impl InitGuard {
-    pub fn new() -> Result<()> {
-        unsafe {
-            // set dpi awareness
-            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            // coinitialize for STA (Single-Threaded Apartment)
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()
-        }
-    }
-}
-
-impl Drop for InitGuard {
-    fn drop(&mut self) {
-        unsafe {
-            CoUninitialize();
-        }
-    }
+pub fn init_dpi_awareness() -> Result<()> {
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
 }
 
 extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -59,8 +42,11 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
 }
 
 pub fn run() -> Result<()> {
-    // init context
-    InitGuard::new()?;
+    // init dpi awareness
+    init_dpi_awareness()?;
+
+    // init COM apartment (STA)
+    let _com_apt = ComApartment::new_sta();
 
     unsafe {
         // get HINSTANCE
@@ -108,6 +94,5 @@ pub fn run() -> Result<()> {
             DispatchMessageW(&msg);
         }
     }
-
     Ok(())
 }
