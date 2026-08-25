@@ -1,4 +1,5 @@
 mod com;
+mod webview;
 
 use crate::app::com::ComApartment;
 use windows::{

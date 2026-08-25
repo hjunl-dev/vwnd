@@ -1,4 +1,4 @@
-# wv2-rs
+# vwnd
 
 Rust-based Windows and WebView2 system programming
 
