@@ -19,7 +19,7 @@ pub struct ComApartment {
 }
 
 impl ComApartment {
-    pub fn new(mode: COINIT) -> Result<Self> {
+    fn new(mode: COINIT) -> Result<Self> {
         let hr = unsafe { CoInitializeEx(None, mode) };
         hr.ok()?;
         Ok(Self {

@@ -1,4 +1,5 @@
 mod app;
+mod base;
 
 use windows::core::Result;
 
