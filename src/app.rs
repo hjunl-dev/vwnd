@@ -1,7 +1,11 @@
 mod com;
+mod handler;
 mod webview;
+mod win;
 
-use crate::app::com::ComApartment;
+use std::rc::Rc;
+
+use crate::app::{com::ComApartment, webview::Host, win::clear_host_in_userdata};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
@@ -34,6 +38,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRE
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
+                clear_host_in_userdata(hwnd);
                 PostQuitMessage(0);
                 LRESULT(0)
             }
@@ -86,8 +91,16 @@ pub fn run() -> Result<()> {
             None,
         )?;
 
+        // create host
+        let host = Rc::new(Host::new(hwnd));
+        win::set_host_in_userdata(host);
+
+        // show window
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = UpdateWindow(hwnd);
+
+        // set webview
+        webview::create(hwnd)?;
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
