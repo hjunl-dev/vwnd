@@ -3,110 +3,30 @@ mod handler;
 mod webview;
 mod win;
 
-use std::rc::Rc;
-
-use crate::app::{com::ComApartment, webview::Host, win::clear_host_in_userdata};
+use crate::app::com::ComApartment;
 use windows::{
-    Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-        Graphics::Gdi::{BeginPaint, COLOR_WINDOW, EndPaint, HBRUSH, PAINTSTRUCT, UpdateWindow},
-        System::LibraryLoader::GetModuleHandleW,
-        UI::{
-            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
-            WindowsAndMessaging::{
-                CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-                GetMessageW, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage, RegisterClassExW,
-                SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW,
-                WS_OVERLAPPEDWINDOW,
-            },
-        },
-    },
-    core::{Result, w},
+    Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG, TranslateMessage},
+    core::Result,
 };
-
-pub fn init_dpi_awareness() -> Result<()> {
-    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
-}
-
-extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    unsafe {
-        match msg {
-            windows::Win32::UI::WindowsAndMessaging::WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let _ = BeginPaint(hwnd, &mut ps);
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
-            windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
-                clear_host_in_userdata(hwnd);
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wp, lp),
-        }
-    }
-}
 
 pub fn run() -> Result<()> {
     // init dpi awareness
-    init_dpi_awareness()?;
+    win::init_dpi_awareness()?;
 
     // init COM apartment (STA)
     let _com_apt = ComApartment::new_sta();
 
-    unsafe {
-        // get HINSTANCE
-        let instance: HINSTANCE = GetModuleHandleW(None)?.into();
-        let class_name = w!("WV2_Sample_Window_Class");
+    // Register window class
+    win::register_wnd_class()?;
 
-        // Register window class
-        let wc = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_VREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wnd_proc),
-            hInstance: instance,
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as _),
-            lpszClassName: class_name,
-            ..Default::default()
-        };
-        let atom = RegisterClassExW(&wc);
-        if atom == 0 {
-            return Err(windows::core::Error::from_thread());
-        }
+    // Create wnd
+    let hwnd = win::create_wnd(true)?;
 
-        // Create win32 window
-        let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            class_name,
-            w!("wv2-rs Win32 Basic Window"),
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            1024,
-            768,
-            None,
-            None,
-            Some(instance),
-            None,
-        )?;
+    // set webview
+    webview::create(hwnd)?;
 
-        // create host
-        let host = Rc::new(Host::new(hwnd));
-        win::set_host_in_userdata(host);
+    // run message pump
+    win::pump();
 
-        // show window
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = UpdateWindow(hwnd);
-
-        // set webview
-        webview::create(hwnd)?;
-
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).into() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
     Ok(())
 }

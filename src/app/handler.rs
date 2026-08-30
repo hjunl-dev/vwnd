@@ -63,7 +63,6 @@ impl ICoreWebView2CreateCoreWebView2ControllerCompletedHandler_Impl for OnWv2Ctr
             *host.ctrl.borrow_mut() = Some(ctrl);
             *host.webview.borrow_mut() = Some(webview);
         }
-
         Ok(())
     }
 }
