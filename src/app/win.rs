@@ -2,16 +2,16 @@ use std::rc::Rc;
 
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{BeginPaint, COLOR_WINDOW, EndPaint, HBRUSH, PAINTSTRUCT, UpdateWindow},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
             WindowsAndMessaging::{
-                CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-                GetMessageW, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage, RegisterClassExW,
-                SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW,
-                WS_OVERLAPPEDWINDOW,
+                self, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+                GetClientRect, GetMessageW, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage,
+                RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE,
+                WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -67,13 +67,23 @@ pub fn init_dpi_awareness() -> Result<()> {
 extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
-            windows::Win32::UI::WindowsAndMessaging::WM_PAINT => {
+            WindowsAndMessaging::WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let _ = BeginPaint(hwnd, &mut ps);
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
-            windows::Win32::UI::WindowsAndMessaging::WM_DESTROY => {
+            WindowsAndMessaging::WM_SIZE => {
+                if let Some(host) = get_host_in_userdata(hwnd) {
+                    if let Some(ctrl) = host.ctrl.borrow().as_ref() {
+                        let mut rect = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut rect);
+                        let _ = ctrl.SetBounds(rect);
+                    }
+                }
+                LRESULT(0)
+            }
+            WindowsAndMessaging::WM_DESTROY => {
                 clear_host_in_userdata(hwnd);
                 PostQuitMessage(0);
                 LRESULT(0)
