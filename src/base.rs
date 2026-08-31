@@ -5,6 +5,7 @@ use core::fmt;
 use std::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant},
 };
 
 // Errors
@@ -45,6 +46,32 @@ impl<T> fmt::Display for PushError<T> {
 }
 
 impl<T> std::error::Error for PushError<T> {}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PopError {
+    Disposed,
+    Empty,
+}
+
+impl fmt::Debug for PopError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PopError::Disposed => f.write_str("PopError::Disposed"),
+            PopError::Empty => f.write_str("PopError::Empty"),
+        }
+    }
+}
+
+impl fmt::Display for PopError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PopError::Disposed => f.write_str("data"),
+            PopError::Empty => f.write_str("data"),
+        }
+    }
+}
+
+impl std::error::Error for PopError {}
 
 // CachePadded to prevent false sharing
 
@@ -112,28 +139,51 @@ impl CondWaiters {
 // blocking queue trait
 
 pub trait BQ<T: Send>: Send + Sync {
-    fn push(&self, item: T) -> Result<(), ()>;
-    fn try_push(&self, item: T) -> Result<(), ()>;
-
-    fn pop(&self) -> Result<T, ()>;
-    fn try_pop(&self) -> Result<T, ()>;
+    fn push(&self, item: T) -> Result<(), PushError<T>>;
+    fn try_push(&self, item: T) -> Result<(), PushError<T>>;
+    fn pop(&self) -> Result<T, PopError>;
+    fn try_pop(&self) -> Result<T, PopError>;
 
     fn dispose(&self);
-
     fn capacity(&self) -> usize;
-
     fn len(&self) -> usize;
-
     fn is_disposed(&self) -> bool;
 }
 
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub trait Executor: Send + Sync {
-    fn submit(&self, job: Job) -> Result<(), ()>;
-    fn try_submit(&self, job: Job) -> Result<(), ()>;
+    fn submit(&self, job: Job) -> Result<(), PushError<Job>>;
+    fn try_submit(&self, job: Job) -> Result<(), PushError<Job>>;
     fn dispose(&self);
 
     fn is_disposed(&self) -> bool;
     fn worker_count(&self) -> usize;
+}
+
+#[must_use = "ScopedTimer must be used."]
+pub struct ScopedTimer<'a> {
+    label: &'a str,
+    start: Instant,
+}
+
+impl<'a> ScopedTimer<'a> {
+    #[inline]
+    pub fn new(label: &'a str) -> Self {
+        Self {
+            label,
+            start: Instant::now(),
+        }
+    }
+
+    #[inline]
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
+}
+
+impl Drop for ScopedTimer<'_> {
+    fn drop(&mut self) {
+        eprintln!("[{}] elapsed: {:?}", self.label, self.elapsed())
+    }
 }
