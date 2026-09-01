@@ -59,11 +59,16 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-    pub fn new(num_workers: usize, job_q_size: usize) -> Self {
-        Self::with_job_q(num_workers, Arc::new(LinkedBQ::new(job_q_size)))
+    pub fn new(num_workers: usize, q_size: usize) -> Self {
+        let jq: Arc<LinkedBQ<_>> = Arc::new(if q_size == 0 {
+            LinkedBQ::unbounded()
+        } else {
+            LinkedBQ::bounded(q_size)
+        });
+        Self::with_jq(num_workers, jq)
     }
 
-    pub fn with_job_q(num_workers: usize, job_q: Arc<dyn BQ<Job>>) -> Self {
+    pub fn with_jq(num_workers: usize, job_q: Arc<dyn BQ<Job>>) -> Self {
         let num_workers = Self::ensure_num_workers(num_workers);
         let mut workers = Vec::with_capacity(num_workers);
 
@@ -116,7 +121,7 @@ impl WorkerPool {
 }
 
 impl Executor for WorkerPool {
-    /// Prevent permanent waiting when the job queue is full and a submission is made from within a worker 
+    /// Prevent permanent waiting when the job queue is full and a submission is made from within a worker
     /// (use inline execution, caller-runs).
     fn submit(&self, job: Job) -> Result<(), PushError<Job>> {
         if IN_WORKER.with(|f| f.get()) {

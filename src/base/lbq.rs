@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use crate::base::{BQ, CachePadded, CondWaiters};
+use crate::base::{BQ, CachePadded, CondWaiters, PopError, PushError};
 
 // ============================================================
 // Primitives for building LBQ
@@ -20,6 +20,7 @@ struct Node<T> {
 impl<T> Node<T> {
     fn new(item: Option<T>) -> NonNull<Self> {
         let ptr = Box::into_raw(Box::new(Node { item, next: None }));
+        // safety: Box never returns nullptr
         unsafe { NonNull::new_unchecked(ptr) }
     }
 
@@ -57,7 +58,7 @@ pub struct LinkedBQ<T> {
 }
 
 impl<T> LinkedBQ<T> {
-    pub fn new(capacity: usize) -> Self {
+    fn new(capacity: usize) -> Self {
         let dummy = Node::dummy();
         let capacity = if capacity == 0 { usize::MAX } else { capacity };
         Self {
@@ -77,6 +78,15 @@ impl<T> LinkedBQ<T> {
         }
     }
 
+    pub fn unbounded() -> Self {
+        Self::new(0)
+    }
+
+    pub fn bounded(capacity: usize) -> Self {
+        // capacity > 0
+        Self::new(capacity.max(1))
+    }
+
     #[inline]
     fn pop_lock(&self) -> MutexGuard<'_, NodePtr<T>> {
         self.pop_side
@@ -92,39 +102,156 @@ impl<T> LinkedBQ<T> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
+
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.count.load(Ordering::Acquire) >= self.capacity
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.count.load(Ordering::Acquire) == self.capacity
+    }
+
+    #[inline]
+    fn disposed(&self) -> bool {
+        self.disposed.load(Ordering::Acquire)
+    }
+
+    fn en_q(&self, item: T, mut guard: MutexGuard<'_, NodePtr<T>>) {
+        let node = Node::new(Some(item));
+
+        unsafe {
+            (*guard.0.as_ptr()).next = Some(node);
+        }
+        guard.0 = node;
+
+        let prev = self.count.fetch_add(1, Ordering::AcqRel);
+        // cascading signal (notify to producer)
+        if prev + 1 < self.capacity {
+            self.push_side.not_full.notify_one();
+        }
+        drop(guard);
+        // was empty (notify to consumer, empty -> not empty)
+        if prev == 0 && self.pop_side.pop_waiters.any() {
+            let _g = self.pop_lock();
+            self.pop_side.not_empty.notify_one();
+        }
+    }
+
+    fn de_q(&self, mut guard: MutexGuard<'_, NodePtr<T>>) -> T {
+        let old = guard.0;
+        let first = unsafe { (*old.as_ptr()).next.unwrap_unchecked() };
+        guard.0 = first;
+        let item = unsafe {
+            drop(Box::from_raw(old.as_ptr()));
+            (*first.as_ptr()).item.take().unwrap_unchecked()
+        };
+
+        let prev = self.count.fetch_sub(1, Ordering::AcqRel);
+        // cascading signal (notify to consumer)
+        if prev > 1 {
+            self.pop_side.not_empty.notify_one();
+        }
+        drop(guard);
+        // was full (notify to producer, full -> not full)
+        if prev == self.capacity && self.push_side.push_waiters.any() {
+            let _g = self.push_lock();
+            self.push_side.not_full.notify_one();
+        }
+        item
+    }
 }
 
 impl<T: Send> BQ<T> for LinkedBQ<T> {
-    fn push(&self, item: T) -> Result<(), super::PushError<T>> {
-        todo!()
+    fn push(&self, item: T) -> Result<(), PushError<T>> {
+        let mut g = self.push_lock();
+
+        if !self.disposed() && self.is_full() {
+            let _wg = self.push_side.push_waiters.enter();
+            g = self
+                .push_side
+                .not_full
+                .wait_while(g, |_g| !self.disposed() && self.is_full())
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        if self.is_disposed() {
+            return Err(PushError::Disposed(item));
+        }
+        self.en_q(item, g);
+        Ok(())
     }
 
-    fn try_push(&self, item: T) -> Result<(), super::PushError<T>> {
-        todo!()
+    fn try_push(&self, item: T) -> Result<(), PushError<T>> {
+        let g = self.push_lock();
+
+        if self.is_disposed() {
+            return Err(PushError::Disposed(item));
+        }
+        if self.is_full() {
+            return Err(PushError::Full(item));
+        }
+        self.en_q(item, g);
+        Ok(())
     }
 
-    fn pop(&self) -> Result<T, super::PopError> {
-        todo!()
+    fn pop(&self) -> Result<T, PopError> {
+        let mut g = self.pop_lock();
+
+        if !self.disposed() && self.is_empty() {
+            let _wg = self.pop_side.pop_waiters.enter();
+            g = self
+                .pop_side
+                .not_empty
+                .wait_while(g, |_g| !self.disposed() && self.is_empty())
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        if self.is_empty() {
+            return Err(PopError::Disposed);
+        }
+        Ok(self.de_q(g))
     }
 
-    fn try_pop(&self) -> Result<T, super::PopError> {
-        todo!()
+    fn try_pop(&self) -> Result<T, PopError> {
+        let g = self.pop_lock();
+
+        if self.is_empty() {
+            return Err(if self.is_disposed() {
+                PopError::Disposed
+            } else {
+                PopError::Empty
+            });
+        }
+        Ok(self.de_q(g))
     }
 
     fn dispose(&self) {
-        todo!()
+        if self
+            .disposed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            {
+                let _g = self.pop_lock();
+                self.pop_side.not_empty.notify_all();
+            }
+            {
+                let _g = self.push_lock();
+                self.push_side.not_full.notify_all();
+            }
+        }
     }
 
     fn capacity(&self) -> usize {
-        todo!()
+        self.capacity
     }
 
     fn len(&self) -> usize {
-        todo!()
+        self.count.load(Ordering::Acquire)
     }
 
     fn is_disposed(&self) -> bool {
-        todo!()
+        self.disposed.load(Ordering::Acquire)
     }
 }
 
