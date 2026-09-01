@@ -8,7 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+// ============================================================
 // Errors
+// ============================================================
 
 pub enum PushError<T> {
     Disposed(T),
@@ -73,7 +75,9 @@ impl fmt::Display for PopError {
 
 impl std::error::Error for PopError {}
 
-// CachePadded to prevent false sharing
+// ============================================================
+// Cache-line padding to prevent false sharing
+// ============================================================
 
 #[repr(align(128))]
 #[derive(Debug, Default, Clone, Copy)]
@@ -99,8 +103,11 @@ impl<T> DerefMut for CachePadded<T> {
     }
 }
 
+// ============================================================
 // Condition variable waiter count
+// ============================================================
 
+#[must_use = "WaiterGuard must be used."]
 pub struct WaiterGuard<'a>(&'a AtomicUsize);
 
 impl Drop for WaiterGuard<'_> {
@@ -136,7 +143,9 @@ impl CondWaiters {
     }
 }
 
-// blocking queue trait
+// ============================================================
+// Blocking queue
+// ============================================================
 
 pub trait BQ<T: Send>: Send + Sync {
     fn push(&self, item: T) -> Result<(), PushError<T>>;
@@ -150,6 +159,10 @@ pub trait BQ<T: Send>: Send + Sync {
     fn is_disposed(&self) -> bool;
 }
 
+// ============================================================
+// Executor
+// ============================================================
+
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub trait Executor: Send + Sync {
@@ -160,6 +173,10 @@ pub trait Executor: Send + Sync {
     fn is_disposed(&self) -> bool;
     fn worker_count(&self) -> usize;
 }
+
+// ============================================================
+// Timer
+// ============================================================
 
 #[must_use = "ScopedTimer must be used."]
 pub struct ScopedTimer<'a> {

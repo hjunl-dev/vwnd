@@ -4,10 +4,7 @@ mod webview;
 mod win;
 
 use crate::app::com::ComApartment;
-use windows::{
-    Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG, TranslateMessage},
-    core::Result,
-};
+use windows::core::Result;
 
 pub fn run() -> Result<()> {
     // init dpi awareness

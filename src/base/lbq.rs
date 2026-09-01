@@ -8,6 +8,10 @@ use std::{
 
 use crate::base::{BQ, CachePadded, CondWaiters};
 
+// ============================================================
+// Primitives for building LBQ
+// ============================================================
+
 struct Node<T> {
     item: Option<T>,
     next: Option<NonNull<Node<T>>>,
@@ -39,6 +43,10 @@ struct PushSide<T> {
     not_full: Condvar,
     push_waiters: CondWaiters,
 }
+
+// ============================================================
+// LBQ
+// ============================================================
 
 pub struct LinkedBQ<T> {
     capacity: usize,
