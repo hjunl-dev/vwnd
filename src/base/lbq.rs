@@ -49,7 +49,7 @@ struct PushSide<T> {
 // LBQ
 // ============================================================
 
-pub struct LinkedBQ<T> {
+pub struct LBQ<T> {
     capacity: usize,
     count: CachePadded<AtomicUsize>,
     disposed: CachePadded<AtomicBool>,
@@ -57,7 +57,7 @@ pub struct LinkedBQ<T> {
     push_side: CachePadded<PushSide<T>>,
 }
 
-impl<T> LinkedBQ<T> {
+impl<T> LBQ<T> {
     fn new(capacity: usize) -> Self {
         let dummy = Node::dummy();
         let capacity = if capacity == 0 { usize::MAX } else { capacity };
@@ -110,12 +110,7 @@ impl<T> LinkedBQ<T> {
 
     #[inline]
     fn is_empty(&self) -> bool {
-        self.count.load(Ordering::Acquire) == self.capacity
-    }
-
-    #[inline]
-    fn disposed(&self) -> bool {
-        self.disposed.load(Ordering::Acquire)
+        self.count.load(Ordering::Acquire) == 0
     }
 
     fn en_q(&self, item: T, mut guard: MutexGuard<'_, NodePtr<T>>) {
@@ -128,14 +123,16 @@ impl<T> LinkedBQ<T> {
 
         let prev = self.count.fetch_add(1, Ordering::AcqRel);
         // cascading signal (notify to producer)
-        if prev + 1 < self.capacity {
+        if prev + 1 < self.capacity && self.push_side.push_waiters.any() {
             self.push_side.not_full.notify_one();
         }
         drop(guard);
         // was empty (notify to consumer, empty -> not empty)
-        if prev == 0 && self.pop_side.pop_waiters.any() {
+        if prev == 0 {
             let _g = self.pop_lock();
-            self.pop_side.not_empty.notify_one();
+            if self.pop_side.pop_waiters.any() {
+                self.pop_side.not_empty.notify_one();
+            }
         }
     }
 
@@ -150,29 +147,31 @@ impl<T> LinkedBQ<T> {
 
         let prev = self.count.fetch_sub(1, Ordering::AcqRel);
         // cascading signal (notify to consumer)
-        if prev > 1 {
+        if prev > 1 && self.pop_side.pop_waiters.any() {
             self.pop_side.not_empty.notify_one();
         }
         drop(guard);
         // was full (notify to producer, full -> not full)
-        if prev == self.capacity && self.push_side.push_waiters.any() {
+        if prev == self.capacity {
             let _g = self.push_lock();
-            self.push_side.not_full.notify_one();
+            if self.push_side.push_waiters.any() {
+                self.push_side.not_full.notify_one();
+            }
         }
         item
     }
 }
 
-impl<T: Send> BQ<T> for LinkedBQ<T> {
+impl<T: Send> BQ<T> for LBQ<T> {
     fn push(&self, item: T) -> Result<(), PushError<T>> {
         let mut g = self.push_lock();
 
-        if !self.disposed() && self.is_full() {
+        if !self.is_disposed() && self.is_full() {
             let _wg = self.push_side.push_waiters.enter();
             g = self
                 .push_side
                 .not_full
-                .wait_while(g, |_g| !self.disposed() && self.is_full())
+                .wait_while(g, |_g| !self.is_disposed() && self.is_full())
                 .unwrap_or_else(PoisonError::into_inner);
         }
         if self.is_disposed() {
@@ -198,12 +197,12 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
     fn pop(&self) -> Result<T, PopError> {
         let mut g = self.pop_lock();
 
-        if !self.disposed() && self.is_empty() {
+        if !self.is_disposed() && self.is_empty() {
             let _wg = self.pop_side.pop_waiters.enter();
             g = self
                 .pop_side
                 .not_empty
-                .wait_while(g, |_g| !self.disposed() && self.is_empty())
+                .wait_while(g, |_g| !self.is_disposed() && self.is_empty())
                 .unwrap_or_else(PoisonError::into_inner);
         }
         if self.is_empty() {
@@ -255,7 +254,7 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
     }
 }
 
-impl<T> Drop for LinkedBQ<T> {
+impl<T> Drop for LBQ<T> {
     fn drop(&mut self) {
         let mut curr = Some(self.pop_lock().0);
         while let Some(node) = curr {
@@ -265,9 +264,9 @@ impl<T> Drop for LinkedBQ<T> {
     }
 }
 
-impl<T> std::fmt::Debug for LinkedBQ<T> {
+impl<T> std::fmt::Debug for LBQ<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LinkedBQ")
+        f.debug_struct("LBQ")
             .field("capacity", &self.capacity)
             .field("len", &self.count.load(Ordering::Relaxed))
             .field("disposed", &self.disposed.load(Ordering::Relaxed))
@@ -275,5 +274,5 @@ impl<T> std::fmt::Debug for LinkedBQ<T> {
     }
 }
 
-unsafe impl<T: Send> Send for LinkedBQ<T> {}
-unsafe impl<T: Send> Sync for LinkedBQ<T> {}
+unsafe impl<T: Send> Send for LBQ<T> {}
+unsafe impl<T: Send> Sync for LBQ<T> {}

@@ -3,6 +3,11 @@ mod base;
 
 use windows::core::Result;
 
+use crate::base::test_worker_pool;
+
 fn main() -> Result<()> {
-    app::run()
+    test_worker_pool();
+    // app::run()
+
+    Ok(())
 }

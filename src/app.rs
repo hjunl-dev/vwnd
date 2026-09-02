@@ -1,5 +1,6 @@
 mod com;
 mod handler;
+mod mswin;
 mod webview;
 mod win;
 

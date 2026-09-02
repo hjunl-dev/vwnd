@@ -4,9 +4,11 @@ mod worker_pool;
 use core::fmt;
 use std::{
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicI32, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
+
+use crate::base::worker_pool::WorkerPool;
 
 // ============================================================
 // Errors
@@ -172,6 +174,26 @@ pub trait Executor: Send + Sync {
 
     fn is_disposed(&self) -> bool;
     fn worker_count(&self) -> usize;
+}
+
+pub fn test_worker_pool() {
+    static COUNTER: AtomicI32 = const { AtomicI32::new(0) };
+    let repeat = 1_000_000;
+
+    {
+        let _t = ScopedTimer::new("test_worker_pool");
+        let pool = WorkerPool::new(0, 0);
+
+        for _ in 0..repeat {
+            let _ = pool.submit(Box::new(move || {
+                COUNTER.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+    }
+
+    let result = COUNTER.load(Ordering::SeqCst);
+    println!("Counter value: {}", result);
+    assert_eq!(result, repeat);
 }
 
 // ============================================================

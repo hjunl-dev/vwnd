@@ -8,7 +8,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::base::{BQ, Executor, Job, PushError, lbq::LinkedBQ};
+use crate::base::{BQ, Executor, Job, PushError, lbq::LBQ};
 
 // ============================================================
 // WorkerPool
@@ -60,10 +60,10 @@ pub struct WorkerPool {
 
 impl WorkerPool {
     pub fn new(num_workers: usize, q_size: usize) -> Self {
-        let jq: Arc<LinkedBQ<_>> = Arc::new(if q_size == 0 {
-            LinkedBQ::unbounded()
+        let jq: Arc<LBQ<_>> = Arc::new(if q_size == 0 {
+            LBQ::unbounded()
         } else {
-            LinkedBQ::bounded(q_size)
+            LBQ::bounded(q_size)
         });
         Self::with_jq(num_workers, jq)
     }
@@ -146,14 +146,18 @@ impl Executor for WorkerPool {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
+            // dispose job queue
+            self.job_q.dispose();
+
+            // drains the worker handle
             let workers: Vec<JoinHandle<()>> = {
                 let mut g = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
                 g.drain(..).collect()
             };
 
-            let caller = thread::current().id();
+            let current = thread::current().id();
             for w in workers {
-                if w.thread().id() == caller {
+                if w.thread().id() == current {
                     continue;
                 }
                 if let Err(e) = w.join() {
