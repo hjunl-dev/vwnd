@@ -1,0 +1,25 @@
+[package]
+name = "vwnd-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+webview2-com = "0.39.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-core = "0.62"
+
+[dependencies.windows]
+version = "0.62.0"
+features = [
+    # --- Common Win32 ---
+    "Win32_Foundation",                  # HWND, BOOL, LPARAM .. etc
+    "Win32_UI_WindowsAndMessaging",      # CreateWindowEx, DefWindowProc, message loop
+    "Win32_System_LibraryLoader",        # GetModuleHandleW (hInstance)
+    "Win32_UI_HiDpi",                    # SetProcessDpiAwarenessContext
+    "Win32_Graphics_Gdi",                # BeginPaint, EndPaint, default rendering
+    "Win32_System_Com",                  # CoInitializeEx, CoCreateInstance
+]

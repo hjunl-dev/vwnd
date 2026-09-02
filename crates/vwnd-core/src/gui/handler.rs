@@ -11,7 +11,7 @@ use windows::Win32::{
 };
 use windows_core::{implement, w};
 
-use crate::app::{webview, win::get_host_in_userdata};
+use crate::gui::{webview, win::get_host_in_userdata};
 
 #[implement(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)]
 pub struct OnWv2EnvCreated(pub HWND);

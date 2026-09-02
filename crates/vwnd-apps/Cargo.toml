@@ -1,0 +1,7 @@
+[package]
+name = "vwnd-apps"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+vwnd-core.workspace = true

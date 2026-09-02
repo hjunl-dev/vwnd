@@ -4,7 +4,7 @@ mod mswin;
 mod webview;
 mod win;
 
-use crate::app::com::ComApartment;
+use crate::gui::com::ComApartment;
 use windows::core::Result;
 
 pub fn run() -> Result<()> {

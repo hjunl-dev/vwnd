@@ -18,7 +18,7 @@ use windows::{
     core::{Result, w},
 };
 
-use crate::app::webview::Host;
+use crate::gui::webview::Host;
 
 mod userdata {
     use windows::Win32::{

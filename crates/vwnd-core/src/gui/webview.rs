@@ -12,7 +12,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use windows::Win32::Foundation::HWND;
 use windows_core::PCWSTR;
 
-use crate::app::{
+use crate::gui::{
     handler::OnWv2EnvCreated,
     win::{self, get_host_in_userdata},
 };
