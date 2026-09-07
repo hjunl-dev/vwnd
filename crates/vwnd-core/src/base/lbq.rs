@@ -188,7 +188,7 @@ impl<T: Send> BQ<T> for LBQ<T> {
             return Err(PushError::Disposed(item));
         }
         if self.is_full() {
-            return Err(PushError::Full(item));
+            return Err(PushError::WouldBlock(item));
         }
         self.en_q(item, g);
         Ok(())
@@ -218,7 +218,7 @@ impl<T: Send> BQ<T> for LBQ<T> {
             return Err(if self.is_disposed() {
                 PopError::Disposed
             } else {
-                PopError::Empty
+                PopError::WouldBlock
             });
         }
         Ok(self.de_q(g))

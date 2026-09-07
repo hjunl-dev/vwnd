@@ -16,13 +16,13 @@ use crate::base::worker_pool::WorkerPool;
 
 pub enum PushError<T> {
     Disposed(T),
-    Full(T),
+    WouldBlock(T),
 }
 
 impl<T> PushError<T> {
     pub fn into_inner(self) -> T {
         match self {
-            PushError::Disposed(t) | PushError::Full(t) => t,
+            PushError::Disposed(t) | PushError::WouldBlock(t) => t,
         }
     }
 
@@ -35,7 +35,7 @@ impl<T> fmt::Debug for PushError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PushError::Disposed(_) => f.write_str("PushError::Disposed"),
-            PushError::Full(_) => f.write_str("PushError::Full"),
+            PushError::WouldBlock(_) => f.write_str("PushError::WouldBlock"),
         }
     }
 }
@@ -44,7 +44,7 @@ impl<T> fmt::Display for PushError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PushError::Disposed(_) => f.write_str("queue is disposed"),
-            PushError::Full(_) => f.write_str("queue is full"),
+            PushError::WouldBlock(_) => f.write_str("queue is full"),
         }
     }
 }
@@ -54,14 +54,14 @@ impl<T> std::error::Error for PushError<T> {}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PopError {
     Disposed,
-    Empty,
+    WouldBlock,
 }
 
 impl fmt::Debug for PopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PopError::Disposed => f.write_str("PopError::Disposed"),
-            PopError::Empty => f.write_str("PopError::Empty"),
+            PopError::WouldBlock => f.write_str("PopError::WouldBlock"),
         }
     }
 }
@@ -69,8 +69,8 @@ impl fmt::Debug for PopError {
 impl fmt::Display for PopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PopError::Disposed => f.write_str("data"),
-            PopError::Empty => f.write_str("data"),
+            PopError::Disposed => f.write_str("queue is disposed"),
+            PopError::WouldBlock => f.write_str("queue is empty"),
         }
     }
 }

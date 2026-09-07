@@ -126,7 +126,7 @@ impl Executor for WorkerPool {
     fn submit(&self, job: Job) -> Result<(), PushError<Job>> {
         if IN_WORKER.with(|f| f.get()) {
             return match self.job_q.try_push(job) {
-                Err(PushError::Full(job)) => {
+                Err(PushError::WouldBlock(job)) => {
                     job();
                     Ok(())
                 }
