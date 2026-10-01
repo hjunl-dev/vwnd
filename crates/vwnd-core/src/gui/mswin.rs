@@ -40,8 +40,9 @@ pub mod window {
         Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow},
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CS_VREDRAW, CreateWindowExW, IDC_ARROW, LoadCursorW, RegisterClassExW, SW_SHOW,
-            ShowWindow, WINDOW_EX_STYLE, WNDCLASSEXW, WNDPROC, WS_OVERLAPPEDWINDOW,
+            CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, IDC_ARROW,
+            LoadCursorW, MSG, PM_NOREMOVE, PeekMessageW, RegisterClassExW, SW_SHOW, ShowWindow,
+            TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WNDPROC, WS_OVERLAPPEDWINDOW,
         },
     };
     use windows_core::{HSTRING, PCWSTR};
@@ -55,7 +56,7 @@ pub mod window {
             // Register window class
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-                style: CS_VREDRAW | CS_VREDRAW,
+                style: CS_HREDRAW | CS_VREDRAW,
                 lpfnWndProc: wnd_proc,
                 hInstance: instance,
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
@@ -108,6 +109,33 @@ pub mod window {
                 let _ = UpdateWindow(hwnd);
             }
             Ok(hwnd)
+        }
+    }
+
+    pub fn create_message_queue() {
+        let mut msg = MSG::default();
+        unsafe {
+            let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+        };
+    }
+
+    pub fn pump_one() {
+        let mut msg = MSG::default();
+        unsafe {
+            if PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE).into() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    pub fn run_message_loop() {
+        let mut msg = MSG::default();
+        unsafe {
+            while GetMessageW(&mut msg, None, 0, 0).into() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
     }
 }
