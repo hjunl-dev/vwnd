@@ -12,10 +12,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use windows::Win32::Foundation::HWND;
 use windows_core::PCWSTR;
 
-use crate::gui::{
-    handler::OnWv2EnvCreated,
-    win::{self, get_host_in_userdata},
-};
+use crate::gui::handler::OnWv2EnvCreated;
 
 // WebView2 Environment
 
@@ -84,8 +81,6 @@ impl Host {
 pub fn create(hwnd: HWND) -> windows_core::Result<()> {
     // create host
     let host = Rc::new(Host::new(hwnd));
-    win::set_host_in_userdata(host);
-
     let handler: ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler =
         OnWv2EnvCreated(hwnd).into();
     unsafe {

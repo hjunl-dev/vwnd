@@ -36,16 +36,48 @@ pub mod userdata {
 
 pub mod window {
     use windows::Win32::{
-        Foundation::{HINSTANCE, HWND},
-        Graphics::Gdi::{COLOR_WINDOW, HBRUSH, UpdateWindow},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+        Graphics::Gdi::{BeginPaint, COLOR_WINDOW, EndPaint, HBRUSH, PAINTSTRUCT, UpdateWindow},
         System::LibraryLoader::GetModuleHandleW,
-        UI::WindowsAndMessaging::{
-            CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DispatchMessageW, GetMessageW, IDC_ARROW,
-            LoadCursorW, MSG, PM_NOREMOVE, PeekMessageW, RegisterClassExW, SW_SHOW, ShowWindow,
-            TranslateMessage, WINDOW_EX_STYLE, WNDCLASSEXW, WNDPROC, WS_OVERLAPPEDWINDOW,
+        UI::{
+            HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+            WindowsAndMessaging::{
+                self, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+                GetMessageW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PeekMessageW,
+                PostQuitMessage, RegisterClassExW, SW_SHOW, ShowWindow, TranslateMessage,
+                WINDOW_EX_STYLE, WNDCLASSEXW, WNDPROC, WS_OVERLAPPEDWINDOW,
+            },
         },
     };
     use windows_core::{HSTRING, PCWSTR};
+
+    pub extern "system" fn default_wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wp: WPARAM,
+        lp: LPARAM,
+    ) -> LRESULT {
+        unsafe {
+            match msg {
+                WindowsAndMessaging::WM_PAINT => {
+                    let mut ps = PAINTSTRUCT::default();
+                    let _ = BeginPaint(hwnd, &mut ps);
+                    let _ = EndPaint(hwnd, &ps);
+                    LRESULT(0)
+                }
+                WindowsAndMessaging::WM_SIZE => LRESULT(0),
+                WindowsAndMessaging::WM_DESTROY => {
+                    PostQuitMessage(0);
+                    LRESULT(0)
+                }
+                _ => DefWindowProcW(hwnd, msg, wp, lp),
+            }
+        }
+    }
+
+    pub fn init_dpi_awareness() -> windows_core::Result<()> {
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+    }
 
     pub fn register_class(class_name: &str, wnd_proc: WNDPROC) -> windows_core::Result<()> {
         unsafe {

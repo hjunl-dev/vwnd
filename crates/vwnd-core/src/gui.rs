@@ -2,29 +2,31 @@ mod com;
 mod handler;
 mod mswin;
 mod webview;
-mod win;
 
 use crate::gui::com::ComApartment;
+use mswin::window;
 use windows::core::Result;
 
 pub fn run() -> Result<()> {
     // init dpi awareness
-    win::init_dpi_awareness()?;
+    window::init_dpi_awareness()?;
 
     // init COM apartment (STA)
     let _com_apt = ComApartment::new_sta();
 
     // Register window class
-    win::register_wnd_class()?;
+    let class_name = "vwnd_wnd_class";
+    let wnd_name = "vwnd_wnd";
+    window::register_class(class_name, Some(window::default_wnd_proc))?;
 
     // Create wnd
-    let hwnd = win::create_wnd(true)?;
+    let hwnd = window::create(class_name, wnd_name, 0, 0, 800, 600, None, true)?;
 
     // set webview
     webview::create(hwnd)?;
 
     // run message pump
-    win::pump();
+    window::run_message_loop();
 
     Ok(())
 }

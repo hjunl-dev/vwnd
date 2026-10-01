@@ -11,8 +11,6 @@ use windows::Win32::{
 };
 use windows_core::{implement, w};
 
-use crate::gui::{webview, win::get_host_in_userdata};
-
 #[implement(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)]
 pub struct OnWv2EnvCreated(pub HWND);
 
@@ -28,10 +26,6 @@ impl ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler_Impl for OnWv2En
             OnWv2CtrlCreated(self.0).into();
         unsafe {
             env.CreateCoreWebView2Controller(self.0, &handler)?;
-        }
-
-        if let Some(host) = get_host_in_userdata(self.0) {
-            *host.env.borrow_mut() = Some(env);
         }
         Ok(())
     }
@@ -57,11 +51,6 @@ impl ICoreWebView2CreateCoreWebView2ControllerCompletedHandler_Impl for OnWv2Ctr
             ctrl.SetBounds(rect)?;
             ctrl.SetIsVisible(true)?;
             webview.Navigate(w!("https://www.google.com/"))?;
-        }
-
-        if let Some(host) = get_host_in_userdata(self.0) {
-            *host.ctrl.borrow_mut() = Some(ctrl);
-            *host.webview.borrow_mut() = Some(webview);
         }
         Ok(())
     }
