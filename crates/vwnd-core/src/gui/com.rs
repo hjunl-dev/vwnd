@@ -48,3 +48,23 @@ impl Drop for ComApartment {
         }
     }
 }
+
+// WebView2 event destructor (remove_Xxx...)
+pub type EventRegDtor = Option<Box<dyn FnOnce()>>;
+
+// WebView2 event registration
+pub struct EventReg(EventRegDtor);
+
+impl EventReg {
+    pub fn new(dtor: impl FnOnce() + 'static) -> Self {
+        Self(Some(Box::new(dtor)))
+    }
+}
+
+impl Drop for EventReg {
+    fn drop(&mut self) {
+        if let Some(dtor) = self.0.take() {
+            dtor();     // remove_Xxx...();
+        }
+    }
+}
