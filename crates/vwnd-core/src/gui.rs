@@ -2,10 +2,15 @@ mod com;
 mod mswin;
 mod webview;
 
-use crate::gui::com::ComApartment;
-use windows::core::Result;
 
-pub fn run() -> Result<()> {
+
+
+pub struct App {
+    
+}
+
+
+pub fn run() -> windows::core::Result<()> {
 
     Ok(())
 }

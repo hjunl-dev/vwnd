@@ -1,4 +1,4 @@
-use std::{cell::Cell, marker::PhantomData, process::exit, rc::Rc};
+use std::{cell::Cell, ffi::c_void, marker::PhantomData, process::exit, rc::Rc};
 
 use windows::Win32::{
     Foundation::{E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -7,9 +7,12 @@ use windows::Win32::{
     UI::{
         HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
         WindowsAndMessaging::{
-            CS_VREDRAW, DispatchMessageW, GetClientRect, GetMessageW, IDC_ARROW, LoadCursorW, MSG,
-            PM_NOREMOVE, PeekMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SetWindowTextW,
-            ShowWindow, TranslateMessage, UnregisterClassW, WNDCLASSEXW,
+            CREATESTRUCTW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+            DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
+            IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PeekMessageW, PostQuitMessage,
+            RegisterClassExW, SW_SHOW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+            TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WM_CREATE, WM_NCCREATE,
+            WM_NCDESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
         },
     },
 };
@@ -39,7 +42,7 @@ pub trait WindowHandler: 'static {
 // - CreateWindowExW's lpParam
 // ============================================================
 
-pub struct CreateContext<H: WindowHandler> {
+pub struct CreateWindowContext<H: WindowHandler> {
     handler: Cell<Option<Rc<H>>>,
     error: Cell<Option<windows_core::Error>>,
 }
@@ -89,7 +92,38 @@ impl<H: WindowHandler> WindowClass<H> {
     }
 
     // CreateWindowExW
-    pub fn create() {}
+    pub fn create(
+        &self,
+        title: &str,
+        w: i32,
+        h: i32,
+        handler: Rc<H>,
+    ) -> windows_core::Result<HWND> {
+        let context = CreateWindowContext {
+            handler: Cell::new(Some(handler)),
+            error: Cell::new(None),
+        };
+        let result = unsafe {
+            let ex_style = WINDOW_EX_STYLE::default();
+            let style = WS_OVERLAPPEDWINDOW;
+            let lpparam = &context as *const CreateWindowContext<H> as *const c_void;
+            CreateWindowExW(
+                ex_style,
+                self.name,
+                &HSTRING::from(title),
+                style,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                w,
+                h,
+                None,
+                None,
+                Some(self.hinstance),
+                Some(lpparam),
+            )
+        };
+        result.map_err(|e| context.error.take().unwrap_or(e))
+    }
 
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
@@ -97,7 +131,48 @@ impl<H: WindowHandler> WindowClass<H> {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        LRESULT(0)
+        unsafe {
+            // 1) handle OnNcCreate, use WindowCreateContext to save handler (GWLP_USERDATA)
+            if msg == WM_NCCREATE {
+                let create_ctx = get_create_window_context::<H>(lparam);
+                if let Some(handler) = create_ctx.handler.take() {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::into_raw(handler) as isize);
+                }
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            // 2) restore USERDATA
+            let handler_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const H;
+            if handler_ptr.is_null() {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            // 3) handle OnNcDestroy
+            if msg == WM_NCDESTROY {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                drop(Rc::from_raw(handler_ptr));
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+
+            // 4) use handler
+            {
+                Rc::increment_strong_count(handler_ptr);
+                let handler = Rc::from_raw(handler_ptr);
+
+                // call on create handler
+                if msg == WM_CREATE {
+                    return match handler.on_create(hwnd) {
+                        Ok(()) => LRESULT(0),
+                        Err(e) => {
+                            get_create_window_context::<H>(lparam).error.set(Some(e));
+                            LRESULT(-1)
+                        }
+                    };
+                }
+                // call on message handler
+                handler
+                    .on_message(hwnd, msg, wparam, lparam)
+                    .unwrap_or_else(|| DefWindowProcW(hwnd, msg, wparam, lparam))
+            }
+        }
     }
 }
 
@@ -143,6 +218,16 @@ pub fn run_message_loop() -> i32 {
 // ============================================================
 // win32 window helpers
 // ============================================================
+
+unsafe fn get_create_window_context<'a, H>(lparam: LPARAM) -> &'a CreateWindowContext<H>
+where
+    H: WindowHandler,
+{
+    unsafe {
+        let cs_ref = &*(lparam.0 as *const CREATESTRUCTW);
+        &*(cs_ref.lpCreateParams as *const CreateWindowContext<H>)
+    }
+}
 
 pub fn show(hwnd: HWND) {
     unsafe {
