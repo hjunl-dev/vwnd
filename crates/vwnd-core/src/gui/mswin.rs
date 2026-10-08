@@ -133,6 +133,10 @@ impl<H: WindowHandler> WindowClass<H> {
     ) -> LRESULT {
         unsafe {
             // 1) handle OnNcCreate, use WindowCreateContext to save handler (GWLP_USERDATA)
+            // e.g. in c++)
+            //      LPCREATESTRUCTW pCreate = reinterpret_cast<LPCREATESTRUCTW>(lParam);
+            //      MyData* pMyData = reinterpret_cast<MyData*>(pCreate->lpCreateParams);
+            //      SetWindowLongPtr(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pMyData));
             if msg == WM_NCCREATE {
                 let create_ctx = get_create_window_context::<H>(lparam);
                 if let Some(handler) = create_ctx.handler.take() {
