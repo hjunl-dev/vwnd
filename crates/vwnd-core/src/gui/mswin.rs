@@ -23,9 +23,7 @@ use windows_core::{HSTRING, PCWSTR};
 // ============================================================
 
 pub trait WindowHandler: 'static {
-    fn on_create(self: &Rc<Self>, _hwnd: HWND) -> windows_core::Result<()> {
-        Ok(())
-    }
+    fn on_create(self: &Rc<Self>, _hwnd: HWND) -> windows_core::Result<()>;
 
     // Calls DefWindowProcW if None is returned.
     fn on_message(
@@ -92,7 +90,7 @@ impl<H: WindowHandler> WindowClass<H> {
     }
 
     // CreateWindowExW
-    pub fn create(
+    pub fn create_wnd(
         &self,
         title: &str,
         w: i32,
