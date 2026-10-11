@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::c_void, marker::PhantomData, rc::Rc};
+use std::{cell::Cell, ffi::c_void, marker::PhantomData, process::exit, rc::Rc};
 
 use windows::Win32::{
     Foundation::{E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -48,7 +48,6 @@ pub struct CreateWindowContext<H: WindowHandler> {
 
 // ============================================================
 // WindowClass
-// - SetProcessDpiAwarenessContext
 // - RegisterClassExW, CreateWindowExW, UnregisterClassW
 // ============================================================
 
@@ -59,11 +58,6 @@ pub struct WindowClass<H: WindowHandler> {
 }
 
 impl<H: WindowHandler> WindowClass<H> {
-    // SetProcessDpiAwarenessContext
-    pub fn init_dpi_awareness() -> windows_core::Result<()> {
-        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
-    }
-
     // RegisterClassExW
     pub fn register(name: PCWSTR) -> windows_core::Result<Self> {
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
@@ -216,6 +210,17 @@ pub fn run_message_loop() -> i32 {
         }
     }
     msg.wParam.0 as i32
+}
+
+// ============================================================
+// win32 process helpers
+// ============================================================
+
+// SetProcessDpiAwarenessContext
+// - must be called before any window is created
+// - fails (E_ACCESSDENIED) if the awareness was already set (e.g. by the app manifest)
+pub fn init_dpi_awareness() -> windows_core::Result<()> {
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
 }
 
 // ============================================================

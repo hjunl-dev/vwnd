@@ -1,11 +1,11 @@
-use std::{cell::Cell, path::Path, rc::Rc};
+use std::path::Path;
 
 use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
-        ICoreWebView2Controller, ICoreWebView2Environment,
+        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
+        ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2NewWindowRequestedEventArgs,
     },
     NewWindowRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
@@ -13,6 +13,65 @@ use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows_core::{Error, HSTRING, PCWSTR, PWSTR};
 
 use crate::gui::com::EventReg;
+
+// ============================================================
+// WebViewEnv
+// - one environment shared by every WebView in the app
+// - popups set via SetNewWindow must come from the same environment
+// ============================================================
+
+#[derive(Clone)]
+pub struct WebViewEnv(ICoreWebView2Environment);
+
+impl WebViewEnv {
+    // CreateCoreWebView2EnvironmentWithOptions
+    pub fn create(
+        udf_path: &Path,
+        on_create: impl FnOnce(windows_core::Result<WebViewEnv>) + 'static,
+    ) -> windows_core::Result<()> {
+        let mut on_create = Some(on_create);
+        let udf_path = HSTRING::from(&*udf_path.to_string_lossy());
+
+        let handler =
+            CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |res, env| {
+                let result = res
+                    .and_then(|()| env.ok_or_else(|| Error::from(E_POINTER)))
+                    .map(WebViewEnv);
+                if let Some(cb) = on_create.take() {
+                    cb(result);
+                }
+                Ok(())
+            }));
+        unsafe {
+            CreateCoreWebView2EnvironmentWithOptions(PCWSTR::null(), &udf_path, None, &handler)
+        }
+    }
+
+    // CreateCoreWebView2Controller
+    pub fn create_host(
+        &self,
+        target: HWND,
+        on_create: impl FnOnce(windows_core::Result<WebViewHost>) + 'static,
+    ) -> windows_core::Result<()> {
+        let mut on_create = Some(on_create);
+
+        let handler =
+            CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |res, ctrl| {
+                let result = res
+                    .and_then(|()| ctrl.ok_or_else(|| Error::from(E_POINTER)))
+                    .and_then(WebViewHost::from_controller);
+                if let Some(cb) = on_create.take() {
+                    cb(result);
+                }
+                Ok(())
+            }));
+        unsafe { self.0.CreateCoreWebView2Controller(target, &handler) }
+    }
+}
+
+// ============================================================
+// WebView
+// ============================================================
 
 #[derive(Clone)]
 pub struct WebView {
@@ -34,66 +93,128 @@ impl WebView {
     }
 }
 
-/// How to handle a NewWindowRequested event.
-pub enum NewWindowPolicy {
-    /// WebView2 default behavior (opens its own popup window)
-    Default,
-    /// Block the popup (window.open returns null)
-    Block,
-    /// Navigate the current view instead of opening a popup
-    NavigateHere,
+// ============================================================
+// NewWindowRequest
+// - passed to the NewWindowRequested callback
+// - dropping it without calling anything = WebView2 default popup
+// ============================================================
+
+pub struct NewWindowRequest {
+    sender: ICoreWebView2,
+    args: ICoreWebView2NewWindowRequestedEventArgs,
+    uri: String,
 }
+
+impl NewWindowRequest {
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// Size requested by window.open features (e.g. "width=400,height=300").
+    /// Note: this is the content size, not the outer window size.
+    pub fn requested_size(&self) -> Option<(u32, u32)> {
+        let features = unsafe { self.args.WindowFeatures() }.ok()?;
+        let mut has_size = Default::default();
+        unsafe { features.HasSize(&mut has_size) }.ok()?;
+        if !has_size.as_bool() {
+            return None;
+        }
+        let (mut w, mut h) = (0u32, 0u32);
+        unsafe {
+            features.Width(&mut w).ok()?;
+            features.Height(&mut h).ok()?;
+        }
+        (w > 0 && h > 0).then_some((w, h))
+    }
+
+    /// Stage 1: cancel the popup and navigate the current view instead.
+    pub fn navigate_here(self) -> windows_core::Result<()> {
+        unsafe {
+            self.args.SetHandled(true)?;
+            self.sender.Navigate(&HSTRING::from(self.uri.as_str()))
+        }
+    }
+
+    /// Cancel the popup (window.open returns null).
+    pub fn block(self) -> windows_core::Result<()> {
+        unsafe { self.args.SetHandled(true) }
+    }
+
+    /// Explicitly let WebView2 open its own popup window.
+    pub fn allow_default(self) {}
+
+    /// Stage 2: hold the request until our own WebView is ready.
+    /// Complete it later with `PendingNewWindow::complete`.
+    pub fn defer(self) -> windows_core::Result<PendingNewWindow> {
+        match unsafe { self.args.GetDeferral() } {
+            Ok(deferral) => Ok(PendingNewWindow {
+                inner: Some((self.args, deferral)),
+            }),
+            Err(e) => {
+                // don't fall back to the default popup on failure
+                let _ = unsafe { self.args.SetHandled(true) };
+                Err(e)
+            }
+        }
+    }
+}
+
+// ============================================================
+// PendingNewWindow
+// - deferred NewWindowRequested
+// - complete(): SetNewWindow (C++ put_NewWindow) + Deferral::Complete
+// - drop without complete(): cancelled (Handled = true)
+// ============================================================
+
+pub struct PendingNewWindow {
+    inner: Option<(ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Deferral)>,
+}
+
+impl PendingNewWindow {
+    /// `view` must be created from the same environment and must not have navigated yet.
+    /// Register settings/event handlers on it before calling this.
+    pub fn complete(mut self, view: &WebView) -> windows_core::Result<()> {
+        let Some((args, deferral)) = self.inner.take() else {
+            return Ok(());
+        };
+        let result = unsafe { args.SetNewWindow(&view.wv) };
+        if result.is_err() {
+            let _ = unsafe { args.SetHandled(true) };
+        }
+        let completed = unsafe { deferral.Complete() };
+        result.and(completed)
+    }
+
+    pub fn cancel(mut self) {
+        self.cancel_inner();
+    }
+
+    fn cancel_inner(&mut self) {
+        if let Some((args, deferral)) = self.inner.take() {
+            unsafe {
+                let _ = args.SetHandled(true);
+                let _ = deferral.Complete();
+            }
+        }
+    }
+}
+
+impl Drop for PendingNewWindow {
+    fn drop(&mut self) {
+        self.cancel_inner();
+    }
+}
+
+// ============================================================
+// WebViewHost
+// ============================================================
 
 pub struct WebViewHost {
     event_regs: Vec<EventReg>,
     view: WebView,
 }
 
-type OnWebViewHostCreate = Box<dyn FnOnce(windows_core::Result<WebViewHost>)>;
-
-#[derive(Clone)]
-struct CompletionSlot(Rc<Cell<Option<OnWebViewHostCreate>>>);
-
-impl CompletionSlot {
-    fn new(on_create: OnWebViewHostCreate) -> Self {
-        Self(Rc::new(Cell::new(Some(on_create))))
-    }
-
-    fn complete(&self, result: windows_core::Result<WebViewHost>) {
-        if let Some(on_create) = self.0.take() {
-            on_create(result);
-        }
-    }
-}
-
 impl WebViewHost {
-    pub fn create(
-        target: HWND,
-        udf_path: &Path,
-        on_create: impl FnOnce(windows_core::Result<WebViewHost>) + 'static,
-    ) -> windows_core::Result<()> {
-        let slot = CompletionSlot::new(Box::new(on_create));
-        let udf_path = HSTRING::from(&*udf_path.to_string_lossy());
-
-        let handler =
-            CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |res, env| {
-                let env = match res.and_then(|()| env.ok_or_else(|| Error::from(E_POINTER))) {
-                    Ok(env) => env,
-                    Err(e) => {
-                        slot.complete(Err(e));
-                        return Ok(());
-                    }
-                };
-                if let Err(e) = create_controller(&env, target, slot.clone()) {
-                    slot.complete(Err(e));
-                }
-                Ok(())
-            }));
-        unsafe {
-            CreateCoreWebView2EnvironmentWithOptions(PCWSTR::null(), &udf_path, None, &handler)
-        }
-    }
-
     pub fn close(self) {
         let WebViewHost { event_regs, view } = self;
         drop(event_regs);
@@ -136,7 +257,7 @@ impl WebViewHost {
 
     pub fn set_on_new_window_requested(
         &mut self,
-        cb: impl Fn(&str) -> NewWindowPolicy + 'static,
+        cb: impl Fn(NewWindowRequest) + 'static,
     ) -> windows_core::Result<()> {
         let handler = NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
             let (Some(sender), Some(args)) = (sender, args) else {
@@ -145,15 +266,7 @@ impl WebViewHost {
             let mut raw = PWSTR::null();
             unsafe { args.Uri(&mut raw)? };
             let uri = take_pwstr(raw);
-
-            match cb(&uri) {
-                NewWindowPolicy::Default => {}
-                NewWindowPolicy::Block => unsafe { args.SetHandled(true)? },
-                NewWindowPolicy::NavigateHere => unsafe {
-                    args.SetHandled(true)?;
-                    sender.Navigate(&HSTRING::from(uri.as_str()))?;
-                },
-            }
+            cb(NewWindowRequest { sender, args, uri });
             Ok(())
         }));
 
@@ -195,24 +308,4 @@ impl WebViewHost {
             view: WebView { ctrl, wv },
         })
     }
-}
-
-// ============================================================
-// webview2 helpers
-// ============================================================
-
-fn create_controller(
-    env: &ICoreWebView2Environment,
-    target: HWND,
-    slot: CompletionSlot,
-) -> windows_core::Result<()> {
-    let handler =
-        CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |res, ctrl| {
-            let webview_host = res
-                .and_then(|()| ctrl.ok_or_else(|| Error::from(E_POINTER)))
-                .and_then(WebViewHost::from_controller);
-            slot.complete(webview_host);
-            Ok(())
-        }));
-    unsafe { env.CreateCoreWebView2Controller(target, &handler) }
 }
