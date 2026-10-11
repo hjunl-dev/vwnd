@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::c_void, marker::PhantomData, process::exit, rc::Rc};
+use std::{cell::Cell, ffi::c_void, marker::PhantomData, rc::Rc};
 
 use windows::Win32::{
     Foundation::{E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -7,12 +7,13 @@ use windows::Win32::{
     UI::{
         HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
         WindowsAndMessaging::{
-            CREATESTRUCTW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-            DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW,
-            IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PeekMessageW, PostQuitMessage,
-            RegisterClassExW, SW_SHOW, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-            TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WM_CREATE, WM_NCCREATE,
-            WM_NCDESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
+            DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
+            GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE,
+            PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW,
+            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW,
+            WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
+            WS_OVERLAPPEDWINDOW,
         },
     },
 };
@@ -68,7 +69,7 @@ impl<H: WindowHandler> WindowClass<H> {
         let hinstance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_VREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(WindowClass::<H>::wnd_proc),
             hInstance: hinstance,
             hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
@@ -199,7 +200,7 @@ pub fn create_message_queue() {
 pub fn pump_one() {
     let mut msg = MSG::default();
     unsafe {
-        if PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE).into() {
+        if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).into() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -245,6 +246,14 @@ pub fn client_rect(hwnd: HWND) -> windows_core::Result<RECT> {
 
 pub fn set_title(hwnd: HWND, title: &str) -> windows_core::Result<()> {
     unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) }
+}
+
+// Posts WM_CLOSE so the window is destroyed on the next loop iteration,
+// not synchronously inside the caller (e.g. a WebView2 event callback).
+pub fn post_close(hwnd: HWND) {
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
 }
 
 pub fn post_quit(exit_code: i32) {

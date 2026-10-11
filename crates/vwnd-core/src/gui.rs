@@ -13,14 +13,14 @@ use windows_core::w;
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
-    webview::WebViewHost,
+    webview::{NewWindowPolicy, WebViewHost},
 };
 
 mod com;
 mod mswin;
 mod webview;
 
-const DEFAULT_URL: &str = "https://www.google.com/";
+const DEFAULT_URL: &str = "https://store.onstove.com/";
 
 pub struct App {
     hwnd: Cell<HWND>,
@@ -54,6 +54,16 @@ impl App {
         // set document title changed callback
         host.set_on_document_title_changed(move |title| {
             let _ = mswin::set_title(hwnd, &title);
+        })?;
+        // set new window requested callback (open popups in the current view)
+        host.set_on_new_window_requested(|uri| {
+            eprintln!("[app] new window requested: {uri}");
+            NewWindowPolicy::NavigateHere
+        })?;
+        // set window close requested callback
+        // - post WM_CLOSE instead of destroying synchronously inside the WebView2 callback
+        host.set_on_window_close_requested(move || {
+            mswin::post_close(hwnd);
         })?;
         // navigate to default url
         view.navigate(DEFAULT_URL)?;

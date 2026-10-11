@@ -4,10 +4,10 @@ use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        CreateCoreWebView2Environment, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
+        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
         ICoreWebView2Controller, ICoreWebView2Environment,
     },
-    take_pwstr,
+    NewWindowRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows_core::{Error, HSTRING, PCWSTR, PWSTR};
@@ -32,6 +32,16 @@ impl WebView {
     pub fn navigate(&self, url: &str) -> windows_core::Result<()> {
         unsafe { self.wv.Navigate(&HSTRING::from(url)) }
     }
+}
+
+/// How to handle a NewWindowRequested event.
+pub enum NewWindowPolicy {
+    /// WebView2 default behavior (opens its own popup window)
+    Default,
+    /// Block the popup (window.open returns null)
+    Block,
+    /// Navigate the current view instead of opening a popup
+    NavigateHere,
 }
 
 pub struct WebViewHost {
@@ -111,18 +121,71 @@ impl WebViewHost {
             cb(take_pwstr(raw_str));
             Ok(())
         }));
+
         let mut token = Default::default();
         unsafe {
             self.view
                 .wv
                 .add_DocumentTitleChanged(&handler, &mut token)?
         };
-
-        let wv = self.view.wv.clone();
-        self.event_regs.push(EventReg::new(move || {
+        self.track(move |wv| {
             let _ = unsafe { wv.remove_DocumentTitleChanged(token) };
-        }));
+        });
         Ok(())
+    }
+
+    pub fn set_on_new_window_requested(
+        &mut self,
+        cb: impl Fn(&str) -> NewWindowPolicy + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
+            let (Some(sender), Some(args)) = (sender, args) else {
+                return Ok(());
+            };
+            let mut raw = PWSTR::null();
+            unsafe { args.Uri(&mut raw)? };
+            let uri = take_pwstr(raw);
+
+            match cb(&uri) {
+                NewWindowPolicy::Default => {}
+                NewWindowPolicy::Block => unsafe { args.SetHandled(true)? },
+                NewWindowPolicy::NavigateHere => unsafe {
+                    args.SetHandled(true)?;
+                    sender.Navigate(&HSTRING::from(uri.as_str()))?;
+                },
+            }
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_NewWindowRequested(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_NewWindowRequested(token) };
+        });
+        Ok(())
+    }
+
+    pub fn set_on_window_close_requested(
+        &mut self,
+        cb: impl Fn() + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = WindowCloseRequestedEventHandler::create(Box::new(move |_sender, _args| {
+            cb();
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_WindowCloseRequested(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_WindowCloseRequested(token) };
+        });
+        Ok(())
+    }
+
+    /// Keeps the event-removal closure alive as an EventReg (runs on drop).
+    fn track(&mut self, remove: impl FnOnce(&ICoreWebView2) + 'static) {
+        let wv = self.view.wv.clone();
+        self.event_regs.push(EventReg::new(move || remove(&wv)));
     }
 
     fn from_controller(ctrl: ICoreWebView2Controller) -> windows_core::Result<Self> {
