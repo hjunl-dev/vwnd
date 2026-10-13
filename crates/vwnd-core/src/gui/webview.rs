@@ -111,7 +111,8 @@ impl NewWindowRequest {
     }
 
     /// Size requested by window.open features (e.g. "width=400,height=300").
-    /// Note: this is the content size, not the outer window size.
+    /// Note: this is the content size in DIPs (CSS px), not the outer window size.
+    /// Use mswin::outer_size_for_client_dip to get the size for create_wnd.
     pub fn requested_size(&self) -> Option<(u32, u32)> {
         let features = unsafe { self.args.WindowFeatures() }.ok()?;
         let mut has_size = Default::default();
@@ -185,6 +186,7 @@ impl PendingNewWindow {
         result.and(completed)
     }
 
+    #[allow(dead_code)]
     pub fn cancel(mut self) {
         self.cancel_inner();
     }
@@ -207,6 +209,8 @@ impl Drop for PendingNewWindow {
 
 // ============================================================
 // WebViewHost
+// - Drop: remove every event registration, then Controller::Close
+//   (guaranteed on every path, including early `?` returns during setup)
 // ============================================================
 
 pub struct WebViewHost {
@@ -214,15 +218,21 @@ pub struct WebViewHost {
     view: WebView,
 }
 
-impl WebViewHost {
-    pub fn close(self) {
-        let WebViewHost { event_regs, view } = self;
-        drop(event_regs);
-        let WebView { ctrl, wv } = view;
-        drop(wv);
-        if let Err(e) = unsafe { ctrl.Close() } {
+impl Drop for WebViewHost {
+    fn drop(&mut self) {
+        // remove_Xxx...
+        self.event_regs.clear();
+        if let Err(e) = unsafe { self.view.ctrl.Close() } {
             eprintln!("[webview] failed to close webview2 controller: {e}");
         }
+        // ICoreWebView2 / ICoreWebView2Controller are released by the field drops after this
+    }
+}
+
+impl WebViewHost {
+    /// Explicit close (same as drop).
+    pub fn close(self) {
+        drop(self);
     }
 
     pub fn view(&self) -> WebView {

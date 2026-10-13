@@ -32,10 +32,12 @@ impl ComApartment {
         Self::new(COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
     }
 
+    #[allow(dead_code)]
     pub fn new_mta() -> Result<Self> {
         Self::new(COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)
     }
 
+    #[allow(dead_code)]
     pub fn was_already_init(&self) -> bool {
         self.already_init
     }
@@ -64,7 +66,7 @@ impl EventReg {
 impl Drop for EventReg {
     fn drop(&mut self) {
         if let Some(dtor) = self.0.take() {
-            dtor();     // remove_Xxx...();
+            dtor(); // remove_Xxx...();
         }
     }
 }

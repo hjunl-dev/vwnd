@@ -21,7 +21,9 @@ mod mswin;
 mod webview;
 
 const DEFAULT_URL: &str = "https://www.google.com/";
+// main window: outer size in physical pixels
 const MAIN_SIZE: (i32, i32) = (1280, 720);
+// popup without a window.open size: content size in DIPs (scaled like window.open sizes)
 const POPUP_SIZE: (i32, i32) = (960, 640);
 
 // ============================================================
@@ -74,11 +76,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn run() -> windows::core::Result<()> {
+    pub fn run() -> windows_core::Result<()> {
         // must run before any window is created
-        mswin::init_dpi_awareness()?;
+        // - not fatal: fails with E_ACCESSDENIED when already set (e.g. by the manifest)
+        if let Err(e) = mswin::init_dpi_awareness() {
+            eprintln!("[app] dpi awareness not applied: {e}");
+        }
 
-        // declared first -> dropped last (after every COM object below)
+        // declared before Shared -> dropped after every COM object below
         let _com = ComApartment::new_sta()?;
 
         let shared = Rc::new(Shared {
@@ -92,7 +97,7 @@ impl App {
         let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", w, h, main)?;
         mswin::show(hwnd);
 
-        let _exit_code = mswin::run_message_loop();
+        let _exit_code = mswin::run_message_loop()?;
         Ok(())
     }
 
@@ -110,9 +115,8 @@ impl App {
         let weak = Rc::downgrade(self);
         env.create_host(self.hwnd.get(), move |res| {
             let Some(this) = weak.upgrade() else {
-                if let Ok(host) = res {
-                    host.close();
-                }
+                // window already gone: dropping the host closes it
+                drop(res);
                 return;
             };
             if let Err(e) = res.and_then(|host| this.attach_webview(host)) {
@@ -121,6 +125,7 @@ impl App {
         })
     }
 
+    // Any `?` below drops `host`, and WebViewHost::drop closes the controller.
     fn attach_webview(&self, mut host: WebViewHost) -> windows_core::Result<()> {
         let hwnd = self.hwnd.get();
         let view = host.view();
@@ -139,7 +144,7 @@ impl App {
                 let _ = req.block();
                 return;
             };
-            if let Err(e) = App::handle_new_window(&shared, req) {
+            if let Err(e) = App::handle_new_window(&shared, hwnd, req) {
                 eprintln!("[app] failed to handle new window request: {e}");
             }
         })?;
@@ -161,7 +166,11 @@ impl App {
     }
 
     // Called inside the opener's NewWindowRequested callback.
-    fn handle_new_window(shared: &Rc<Shared>, req: NewWindowRequest) -> windows_core::Result<()> {
+    fn handle_new_window(
+        shared: &Rc<Shared>,
+        opener: HWND,
+        req: NewWindowRequest,
+    ) -> windows_core::Result<()> {
         eprintln!(
             "[app] new window requested ({:?}): {}",
             NEW_WINDOW_POLICY,
@@ -174,21 +183,29 @@ impl App {
             }
             NewWindowPolicy::Block => req.block(),
             NewWindowPolicy::NavigateHere => req.navigate_here(),
-            NewWindowPolicy::OwnWindow => App::open_popup(shared, req),
+            NewWindowPolicy::OwnWindow => App::open_popup(shared, opener, req),
         }
     }
 
     // Stage 2: open the request in our own App window.
-    fn open_popup(shared: &Rc<Shared>, req: NewWindowRequest) -> windows_core::Result<()> {
-        let (w, h) = req
+    fn open_popup(
+        shared: &Rc<Shared>,
+        opener: HWND,
+        req: NewWindowRequest,
+    ) -> windows_core::Result<()> {
+        // window.open features give a content size in DIPs
+        let (cw, ch) = req
             .requested_size()
             .and_then(|(w, h)| Some((i32::try_from(w).ok()?, i32::try_from(h).ok()?)))
             .unwrap_or(POPUP_SIZE);
 
-        // Hold the request; the popup App completes it (SetNewWindow) once its WebView is ready.
-        // If anything below fails, the App (and the pending request inside it) is dropped,
-        // which cancels the request.
+        // Hold the request first: from here on, any failure drops the pending request,
+        // which cancels it instead of falling back to the WebView2 default popup.
         let pending = req.defer()?;
+
+        // DIP content size -> physical outer size, using the opener's DPI
+        let (w, h) = mswin::outer_size_for_client_dip(opener, cw, ch)?;
+
         let popup = Rc::new(App::new(shared.clone(), Initial::NewWindow(pending)));
         let hwnd = shared.wnd_class.create_wnd("vwnd_popup", w, h, popup)?;
         mswin::show(hwnd);
@@ -275,11 +292,11 @@ impl WindowHandler for App {
     }
 
     fn on_message(
-        self: &std::rc::Rc<Self>,
-        hwnd: HWND,
+        self: &Rc<Self>,
+        _hwnd: HWND,
         msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
+        _wparam: WPARAM,
+        _lparam: LPARAM,
     ) -> Option<LRESULT> {
         match msg {
             WM_SIZE => {

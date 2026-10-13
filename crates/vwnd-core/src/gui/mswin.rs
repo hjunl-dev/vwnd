@@ -1,23 +1,33 @@
-use std::{cell::Cell, ffi::c_void, marker::PhantomData, process::exit, rc::Rc};
+use std::{cell::Cell, ffi::c_void, marker::PhantomData, rc::Rc};
 
 use windows::Win32::{
     Foundation::{E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{COLOR_WINDOW, HBRUSH},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
-        HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
+        HiDpi::{
+            AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            GetDpiForWindow, SetProcessDpiAwarenessContext,
+        },
         WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
             DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
             GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE,
             PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW,
             SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW,
-            WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
-            WS_OVERLAPPEDWINDOW,
+            WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY,
+            WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
         },
     },
 };
 use windows_core::{HSTRING, PCWSTR};
+
+// Styles used by WindowClass::create_wnd (also used for size calculation)
+const WND_STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
+const WND_EX_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(0);
+
+// 96 DPI = 100% scale
+const BASE_DPI: u32 = 96;
 
 // ============================================================
 // WindowHandler
@@ -85,6 +95,7 @@ impl<H: WindowHandler> WindowClass<H> {
     }
 
     // CreateWindowExW
+    // - w, h: outer window size in physical pixels
     pub fn create_wnd(
         &self,
         title: &str,
@@ -97,14 +108,12 @@ impl<H: WindowHandler> WindowClass<H> {
             error: Cell::new(None),
         };
         let result = unsafe {
-            let ex_style = WINDOW_EX_STYLE::default();
-            let style = WS_OVERLAPPEDWINDOW;
             let lpparam = &context as *const CreateWindowContext<H> as *const c_void;
             CreateWindowExW(
-                ex_style,
+                WND_EX_STYLE,
                 self.name,
                 &HSTRING::from(title),
-                style,
+                WND_STYLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 w,
@@ -184,6 +193,8 @@ impl<H: WindowHandler> Drop for WindowClass<H> {
 // - GetMessageW, PeekMessageW
 // ============================================================
 
+// For hosting inside an external loop (e.g. a game loop).
+#[allow(dead_code)]
 pub fn create_message_queue() {
     let mut msg = MSG::default();
     unsafe {
@@ -191,6 +202,8 @@ pub fn create_message_queue() {
     };
 }
 
+// For hosting inside an external loop (e.g. a game loop).
+#[allow(dead_code)]
 pub fn pump_one() {
     let mut msg = MSG::default();
     unsafe {
@@ -201,15 +214,22 @@ pub fn pump_one() {
     }
 }
 
-pub fn run_message_loop() -> i32 {
+// GetMessageW returns -1 on error, which is "true" as a BOOL -> check the raw value.
+pub fn run_message_loop() -> windows_core::Result<i32> {
     let mut msg = MSG::default();
-    unsafe {
-        while GetMessageW(&mut msg, None, 0, 0).into() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+    loop {
+        match unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 {
+            0 => return Ok(msg.wParam.0 as i32), // WM_QUIT
+            -1 => {
+                unsafe { GetLastError() }.ok()?;
+                return Err(E_FAIL.into());
+            }
+            _ => unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            },
         }
     }
-    msg.wParam.0 as i32
 }
 
 // ============================================================
@@ -251,6 +271,30 @@ pub fn client_rect(hwnd: HWND) -> windows_core::Result<RECT> {
 
 pub fn set_title(hwnd: HWND, title: &str) -> windows_core::Result<()> {
     unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) }
+}
+
+// Converts a client (content) size in DIPs to the outer window size in physical pixels
+// for a window created by WindowClass::create_wnd.
+// - `reference`: window whose DPI is used (e.g. the opener of a popup)
+pub fn outer_size_for_client_dip(
+    reference: HWND,
+    w: i32,
+    h: i32,
+) -> windows_core::Result<(i32, i32)> {
+    let dpi = match unsafe { GetDpiForWindow(reference) } {
+        0 => BASE_DPI,
+        dpi => dpi,
+    };
+    let scale = |v: i32| ((v as i64 * dpi as i64 + (BASE_DPI / 2) as i64) / BASE_DPI as i64) as i32;
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: scale(w),
+        bottom: scale(h),
+    };
+    unsafe { AdjustWindowRectExForDpi(&mut rect, WND_STYLE, false, WND_EX_STYLE, dpi)? };
+    Ok((rect.right - rect.left, rect.bottom - rect.top))
 }
 
 // Posts WM_CLOSE so the window is destroyed on the next loop iteration,
