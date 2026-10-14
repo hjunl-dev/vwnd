@@ -6,14 +6,14 @@ use std::{
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    UI::WindowsAndMessaging::{WM_DESTROY, WM_SIZE},
+    UI::WindowsAndMessaging::{WM_DESTROY, WM_DPICHANGED, WM_MOVE, WM_SETFOCUS, WM_SIZE},
 };
 use windows_core::w;
 
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
-    webview::{NewWindowRequest, PendingNewWindow, WebViewEnv, WebViewHost},
+    webview::{NewWindowRequest, PendingNewWindow, WebView, WebViewEnv, WebViewHost},
 };
 
 mod com;
@@ -21,9 +21,10 @@ mod mswin;
 mod webview;
 
 const DEFAULT_URL: &str = "https://www.google.com/";
-// main window: outer size in physical pixels
+// Window content sizes in DIPs (scaled to physical pixels by DPI)
+// - main window: system DPI
+// - popup without a window.open size: opener's DPI (same as window.open sizes)
 const MAIN_SIZE: (i32, i32) = (1280, 720);
-// popup without a window.open size: content size in DIPs (scaled like window.open sizes)
 const POPUP_SIZE: (i32, i32) = (960, 640);
 
 // ============================================================
@@ -93,7 +94,7 @@ impl App {
         });
 
         let main = Rc::new(App::new(shared.clone(), Initial::Url(DEFAULT_URL.to_owned())));
-        let (w, h) = MAIN_SIZE;
+        let (w, h) = mswin::outer_size_for_client_dip(None, MAIN_SIZE.0, MAIN_SIZE.1)?;
         let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", w, h, main)?;
         mswin::show(hwnd);
 
@@ -156,6 +157,11 @@ impl App {
 
         *self.host.borrow_mut() = Some(host);
 
+        // The window may have been activated before the WebView existed (WM_SETFOCUS missed).
+        if mswin::is_foreground(hwnd) {
+            let _ = view.focus();
+        }
+
         // For popups, every setting/handler above must be in place before SetNewWindow.
         let initial = self.initial.borrow_mut().take();
         match initial {
@@ -204,7 +210,7 @@ impl App {
         let pending = req.defer()?;
 
         // DIP content size -> physical outer size, using the opener's DPI
-        let (w, h) = mswin::outer_size_for_client_dip(opener, cw, ch)?;
+        let (w, h) = mswin::outer_size_for_client_dip(Some(opener), cw, ch)?;
 
         let popup = Rc::new(App::new(shared.clone(), Initial::NewWindow(pending)));
         let hwnd = shared.wnd_class.create_wnd("vwnd_popup", w, h, popup)?;
@@ -222,9 +228,13 @@ impl App {
         }
     }
 
+    // Clones the view out so no RefCell borrow is held while calling into WebView2.
+    fn view(&self) -> Option<WebView> {
+        self.host.borrow().as_ref().map(WebViewHost::view)
+    }
+
     fn resize_webview(&self) {
-        let view = self.host.borrow().as_ref().map(WebViewHost::view);
-        let Some(view) = view else {
+        let Some(view) = self.view() else {
             return;
         };
         if let Ok(rect) = mswin::client_rect(self.hwnd.get()) {
@@ -293,14 +303,32 @@ impl WindowHandler for App {
 
     fn on_message(
         self: &Rc<Self>,
-        _hwnd: HWND,
+        hwnd: HWND,
         msg: u32,
         _wparam: WPARAM,
-        _lparam: LPARAM,
+        lparam: LPARAM,
     ) -> Option<LRESULT> {
         match msg {
             WM_SIZE => {
                 self.resize_webview();
+                Some(LRESULT(0))
+            }
+            WM_MOVE => {
+                if let Some(view) = self.view() {
+                    let _ = view.notify_parent_moved();
+                }
+                Some(LRESULT(0))
+            }
+            WM_SETFOCUS => {
+                if let Some(view) = self.view() {
+                    let _ = view.focus();
+                }
+                Some(LRESULT(0))
+            }
+            WM_DPICHANGED => {
+                if let Err(e) = mswin::apply_dpi_changed(hwnd, lparam) {
+                    eprintln!("[app] failed to apply dpi change: {e}");
+                }
                 Some(LRESULT(0))
             }
             WM_DESTROY => {

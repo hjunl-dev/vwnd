@@ -4,8 +4,9 @@ use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
-        ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2NewWindowRequestedEventArgs,
+        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, CreateCoreWebView2EnvironmentWithOptions,
+        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment,
+        ICoreWebView2NewWindowRequestedEventArgs,
     },
     NewWindowRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
@@ -90,6 +91,17 @@ impl WebView {
 
     pub fn navigate(&self, url: &str) -> windows_core::Result<()> {
         unsafe { self.wv.Navigate(&HSTRING::from(url)) }
+    }
+
+    /// Gives keyboard focus to the WebView (call when the host window gets focus).
+    pub fn focus(&self) -> windows_core::Result<()> {
+        unsafe { self.ctrl.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) }
+    }
+
+    /// Call when the host (or an ancestor) window moves, so popups such as
+    /// <select> dropdowns and IME candidate windows stay aligned.
+    pub fn notify_parent_moved(&self) -> windows_core::Result<()> {
+        unsafe { self.ctrl.NotifyParentWindowPositionChanged() }
     }
 }
 

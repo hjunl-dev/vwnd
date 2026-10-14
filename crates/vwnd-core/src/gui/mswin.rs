@@ -7,16 +7,16 @@ use windows::Win32::{
     UI::{
         HiDpi::{
             AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-            GetDpiForWindow, SetProcessDpiAwarenessContext,
+            GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
         },
         WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
-            DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
-            GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE,
+            DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetForegroundWindow,
+            GetMessageW, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE,
             PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW,
-            SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW,
-            WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY,
-            WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+            ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
+            WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
         },
     },
 };
@@ -273,18 +273,24 @@ pub fn set_title(hwnd: HWND, title: &str) -> windows_core::Result<()> {
     unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) }
 }
 
+pub fn is_foreground(hwnd: HWND) -> bool {
+    unsafe { GetForegroundWindow() == hwnd }
+}
+
 // Converts a client (content) size in DIPs to the outer window size in physical pixels
 // for a window created by WindowClass::create_wnd.
 // - `reference`: window whose DPI is used (e.g. the opener of a popup)
+//   None -> system DPI (e.g. the first window, which has no reference yet)
 pub fn outer_size_for_client_dip(
-    reference: HWND,
+    reference: Option<HWND>,
     w: i32,
     h: i32,
 ) -> windows_core::Result<(i32, i32)> {
-    let dpi = match unsafe { GetDpiForWindow(reference) } {
-        0 => BASE_DPI,
-        dpi => dpi,
+    let dpi = match reference {
+        Some(hwnd) => unsafe { GetDpiForWindow(hwnd) },
+        None => unsafe { GetDpiForSystem() },
     };
+    let dpi = if dpi == 0 { BASE_DPI } else { dpi };
     let scale = |v: i32| ((v as i64 * dpi as i64 + (BASE_DPI / 2) as i64) / BASE_DPI as i64) as i32;
 
     let mut rect = RECT {
@@ -295,6 +301,27 @@ pub fn outer_size_for_client_dip(
     };
     unsafe { AdjustWindowRectExForDpi(&mut rect, WND_STYLE, false, WND_EX_STYLE, dpi)? };
     Ok((rect.right - rect.left, rect.bottom - rect.top))
+}
+
+// WM_DPICHANGED: resize/move the window to the rect suggested by the system.
+// The resulting WM_SIZE updates the content (e.g. WebView bounds).
+pub fn apply_dpi_changed(hwnd: HWND, lparam: LPARAM) -> windows_core::Result<()> {
+    if lparam.0 == 0 {
+        return Ok(());
+    }
+    // lParam: *const RECT, valid for the duration of the message
+    let r = unsafe { &*(lparam.0 as *const RECT) };
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    }
 }
 
 // Posts WM_CLOSE so the window is destroyed on the next loop iteration,
