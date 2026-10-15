@@ -13,14 +13,25 @@ use windows_core::w;
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
-    webview::{NewWindowRequest, PendingNewWindow, WebView, WebViewEnv, WebViewHost},
+    webview::{NewWindowRequest, PendingNewWindow, WebMessage, WebView, WebViewEnv, WebViewHost},
 };
 
 mod com;
+mod demo;
 mod mswin;
 mod webview;
 
-const DEFAULT_URL: &str = "https://www.google.com/";
+// What the main window loads first
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+enum StartPage {
+    Url(&'static str),
+    /// built-in page for testing popups, close, the bridge and navigation filtering
+    TestPage,
+}
+
+const START_PAGE: StartPage = StartPage::TestPage;
+// const START_PAGE: StartPage = StartPage::Url("https://www.google.com/");
 // Window content sizes in DIPs (scaled to physical pixels by DPI)
 // - main window: system DPI
 // - popup without a window.open size: opener's DPI (same as window.open sizes)
@@ -60,7 +71,7 @@ struct Shared {
 
 // What a window shows once its WebView is ready
 enum Initial {
-    Url(String),
+    Start(StartPage),
     NewWindow(PendingNewWindow),
 }
 
@@ -93,7 +104,7 @@ impl App {
             open_windows: Cell::new(0),
         });
 
-        let main = Rc::new(App::new(shared.clone(), Initial::Url(DEFAULT_URL.to_owned())));
+        let main = Rc::new(App::new(shared.clone(), Initial::Start(START_PAGE)));
         let (w, h) = mswin::outer_size_for_client_dip(None, MAIN_SIZE.0, MAIN_SIZE.1)?;
         let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", w, h, main)?;
         mswin::show(hwnd);
@@ -154,6 +165,10 @@ impl App {
         host.set_on_window_close_requested(move || {
             mswin::post_close(hwnd);
         })?;
+        // set web message received callback (page -> host)
+        host.set_on_web_message_received(App::handle_web_message)?;
+        // inject the bridge (window.vwnd) into every document, before the first navigation
+        view.add_script_on_document_created(demo::BRIDGE_JS)?;
 
         *self.host.borrow_mut() = Some(host);
 
@@ -165,9 +180,25 @@ impl App {
         // For popups, every setting/handler above must be in place before SetNewWindow.
         let initial = self.initial.borrow_mut().take();
         match initial {
-            Some(Initial::Url(url)) => view.navigate(&url),
+            Some(Initial::Start(StartPage::Url(url))) => view.navigate(url),
+            Some(Initial::Start(StartPage::TestPage)) => view.navigate_to_string(demo::TEST_HTML),
             Some(Initial::NewWindow(pending)) => pending.complete(&view),
             None => Ok(()),
+        }
+    }
+
+    // Page -> host messages. Demo protocol: echo back as {"type":"echo","data":<message>}.
+    // In real use, check msg.source() before trusting the content.
+    fn handle_web_message(msg: WebMessage) {
+        eprintln!(
+            "[app] web message from {}: {}",
+            msg.source(),
+            msg.text().unwrap_or(msg.json())
+        );
+        // msg.json() is already valid JSON, so it can be embedded as-is
+        let reply = format!(r#"{{"type":"echo","data":{}}}"#, msg.json());
+        if let Err(e) = msg.reply_json(&reply) {
+            eprintln!("[app] failed to reply web message: {e}");
         }
     }
 

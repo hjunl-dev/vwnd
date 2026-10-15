@@ -1,14 +1,16 @@
 use std::path::Path;
 
 use webview2_com::{
+    AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, CreateCoreWebView2EnvironmentWithOptions,
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment,
-        ICoreWebView2NewWindowRequestedEventArgs,
+        ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2WebMessageReceivedEventArgs,
     },
-    NewWindowRequestedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    NewWindowRequestedEventHandler, WebMessageReceivedEventHandler,
+    WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows_core::{Error, HSTRING, PCWSTR, PWSTR};
@@ -93,6 +95,42 @@ impl WebView {
         unsafe { self.wv.Navigate(&HSTRING::from(url)) }
     }
 
+    /// Loads the given HTML as the document (origin is about:blank-like; max ~2 MB).
+    pub fn navigate_to_string(&self, html: &str) -> windows_core::Result<()> {
+        unsafe { self.wv.NavigateToString(&HSTRING::from(html)) }
+    }
+
+    /// Runs `js` in every document (top-level and iframes) before the page's own scripts.
+    /// Applies to navigations started after this call, so add scripts before
+    /// `navigate*` / `PendingNewWindow::complete`.
+    pub fn add_script_on_document_created(&self, js: &str) -> windows_core::Result<()> {
+        let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+            |res, _id| {
+                if let Err(e) = res {
+                    eprintln!("[webview] failed to add document-created script: {e}");
+                }
+                Ok(())
+            },
+        ));
+        unsafe {
+            self.wv
+                .AddScriptToExecuteOnDocumentCreated(&HSTRING::from(js), &handler)
+        }
+    }
+
+    /// Sends a JSON value to the page (`chrome.webview` "message" event, `e.data` is parsed).
+    /// For host-initiated pushes; replies to a page message go through `WebMessage::reply_json`.
+    #[allow(dead_code)]
+    pub fn post_json(&self, json: &str) -> windows_core::Result<()> {
+        post_json(&self.wv, json)
+    }
+
+    /// Sends a string to the page (`e.data` is the string).
+    #[allow(dead_code)]
+    pub fn post_string(&self, text: &str) -> windows_core::Result<()> {
+        post_string(&self.wv, text)
+    }
+
     /// Gives keyboard focus to the WebView (call when the host window gets focus).
     pub fn focus(&self) -> windows_core::Result<()> {
         unsafe { self.ctrl.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) }
@@ -169,6 +207,71 @@ impl NewWindowRequest {
                 Err(e)
             }
         }
+    }
+}
+
+// ============================================================
+// WebMessage
+// - passed to the WebMessageReceived callback (chrome.webview.postMessage)
+// ============================================================
+
+pub struct WebMessage {
+    sender: ICoreWebView2,
+    source: String,
+    json: String,
+    text: Option<String>,
+}
+
+impl WebMessage {
+    /// URI of the document that posted the message. Check it before trusting the content.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The message as JSON (always available; a posted string becomes a JSON string literal).
+    pub fn json(&self) -> &str {
+        &self.json
+    }
+
+    /// The message if the page posted a plain string.
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
+    /// Replies to the WebView that posted the message.
+    pub fn reply_json(&self, json: &str) -> windows_core::Result<()> {
+        post_json(&self.sender, json)
+    }
+
+    #[allow(dead_code)]
+    pub fn reply_string(&self, text: &str) -> windows_core::Result<()> {
+        post_string(&self.sender, text)
+    }
+
+    fn from_args(
+        sender: ICoreWebView2,
+        args: &ICoreWebView2WebMessageReceivedEventArgs,
+    ) -> windows_core::Result<Self> {
+        let mut raw = PWSTR::null();
+        unsafe { args.Source(&mut raw)? };
+        let source = take_pwstr(raw);
+
+        let mut raw = PWSTR::null();
+        unsafe { args.WebMessageAsJson(&mut raw)? };
+        let json = take_pwstr(raw);
+
+        // fails (E_INVALIDARG) when the message is not a string -> None
+        let mut raw = PWSTR::null();
+        let text = unsafe { args.TryGetWebMessageAsString(&mut raw) }
+            .ok()
+            .map(|()| take_pwstr(raw));
+
+        Ok(Self {
+            sender,
+            source,
+            json,
+            text,
+        })
     }
 }
 
@@ -317,6 +420,26 @@ impl WebViewHost {
         Ok(())
     }
 
+    pub fn set_on_web_message_received(
+        &mut self,
+        cb: impl Fn(WebMessage) + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
+            let (Some(sender), Some(args)) = (sender, args) else {
+                return Ok(());
+            };
+            cb(WebMessage::from_args(sender, &args)?);
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_WebMessageReceived(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_WebMessageReceived(token) };
+        });
+        Ok(())
+    }
+
     /// Keeps the event-removal closure alive as an EventReg (runs on drop).
     fn track(&mut self, remove: impl FnOnce(&ICoreWebView2) + 'static) {
         let wv = self.view.wv.clone();
@@ -330,4 +453,16 @@ impl WebViewHost {
             view: WebView { ctrl, wv },
         })
     }
+}
+
+// ============================================================
+// webview2 helpers
+// ============================================================
+
+fn post_json(wv: &ICoreWebView2, json: &str) -> windows_core::Result<()> {
+    unsafe { wv.PostWebMessageAsJson(&HSTRING::from(json)) }
+}
+
+fn post_string(wv: &ICoreWebView2, text: &str) -> windows_core::Result<()> {
+    unsafe { wv.PostWebMessageAsString(&HSTRING::from(text)) }
 }
