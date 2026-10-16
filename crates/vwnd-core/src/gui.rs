@@ -13,7 +13,10 @@ use windows_core::w;
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
-    webview::{NewWindowRequest, PendingNewWindow, WebMessage, WebView, WebViewEnv, WebViewHost},
+    webview::{
+        NewWindowRequest, PendingNewWindow, WebMessage, WebView, WebViewEnv, WebViewHost,
+        WebViewSettings,
+    },
 };
 
 mod com;
@@ -54,9 +57,113 @@ enum NewWindowPolicy {
     NavigateHere,
     /// Stage 2: open in our own window (Deferral + SetNewWindow)
     OwnWindow,
+    /// Open in the system default browser
+    External,
 }
 
 const NEW_WINDOW_POLICY: NewWindowPolicy = NewWindowPolicy::OwnWindow;
+
+// ============================================================
+// Navigation filter
+// - applied to top-level navigations (NavigationStarting) and new-window requests
+// ============================================================
+
+// http(s) hosts that stay in the app (subdomains included).
+// - None: every http(s) host stays in the app
+// - Some(hosts): other hosts open in the system browser
+const IN_APP_HOSTS: Option<&[&str]> = None;
+// const IN_APP_HOSTS: Option<&[&str]> = Some(&["example.com", "google.com"]);
+
+// Non-http(s) schemes handed to the system (others are blocked)
+const EXTERNAL_SCHEMES: &[&str] = &["mailto", "tel"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavDecision {
+    Allow,
+    External,
+    Block,
+}
+
+fn classify_navigation(uri: &str) -> NavDecision {
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return NavDecision::Block;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        // NavigateToString / window.open('') / blob documents
+        "about" | "data" | "blob" => NavDecision::Allow,
+        "http" | "https" => {
+            let Some(allowed) = IN_APP_HOSTS else {
+                return NavDecision::Allow;
+            };
+            match url_host(rest) {
+                Some(host) if host_matches(&host, allowed) => NavDecision::Allow,
+                Some(_) => NavDecision::External,
+                None => NavDecision::Block,
+            }
+        }
+        s if EXTERNAL_SCHEMES.contains(&s) => NavDecision::External,
+        _ => NavDecision::Block,
+    }
+}
+
+// "//user@Host:8080/path?q" -> "host"
+fn url_host(after_scheme: &str) -> Option<String> {
+    let authority = after_scheme.strip_prefix("//")?;
+    let authority = authority.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    let host = if let Some(v6) = host_port.strip_prefix('[') {
+        v6.split_once(']')?.0
+    } else {
+        host_port.split(':').next()?
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+fn host_matches(host: &str, allowed: &[&str]) -> bool {
+    allowed.iter().any(|a| {
+        host == *a
+            || host
+                .strip_suffix(a)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
+}
+
+// Only http(s) and EXTERNAL_SCHEMES are ever handed to ShellExecute
+// (about:/data:/blob: only make sense inside the app; unknown schemes may launch apps).
+fn can_open_externally(uri: &str) -> bool {
+    let Some((scheme, _)) = uri.split_once(':') else {
+        return false;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    matches!(scheme.as_str(), "http" | "https") || EXTERNAL_SCHEMES.contains(&scheme.as_str())
+}
+
+fn open_external(uri: &str) {
+    if !can_open_externally(uri) {
+        eprintln!("[app] not opening externally: {uri}");
+        return;
+    }
+    eprintln!("[app] opening in system browser: {uri}");
+    if let Err(e) = mswin::open_external(uri) {
+        eprintln!("[app] failed to open externally: {e}");
+    }
+}
+
+// ============================================================
+// WebView settings
+// - debug: developer features on / release: locked down
+// ============================================================
+
+fn webview_settings() -> WebViewSettings {
+    let debug = cfg!(debug_assertions);
+    WebViewSettings {
+        dev_tools: debug,
+        default_context_menus: debug,
+        status_bar: false,
+        browser_accelerator_keys: debug,
+    }
+}
 
 // ============================================================
 // Shared
@@ -145,6 +252,20 @@ impl App {
         view.set_bounds(mswin::client_rect(hwnd)?)?;
         // set visible
         view.set_visible(true)?;
+        // settings (before the first navigation / SetNewWindow)
+        view.apply_settings(&webview_settings())?;
+        // navigation filter
+        host.set_on_navigation_starting(|uri| match classify_navigation(uri) {
+            NavDecision::Allow => true,
+            NavDecision::External => {
+                open_external(uri);
+                false
+            }
+            NavDecision::Block => {
+                eprintln!("[app] navigation blocked: {uri}");
+                false
+            }
+        })?;
         // set document title changed callback
         host.set_on_document_title_changed(move |title| {
             let _ = mswin::set_title(hwnd, &title);
@@ -208,11 +329,19 @@ impl App {
         opener: HWND,
         req: NewWindowRequest,
     ) -> windows_core::Result<()> {
+        let decision = classify_navigation(req.uri());
         eprintln!(
-            "[app] new window requested ({:?}): {}",
+            "[app] new window requested ({:?}, {:?}): {}",
             NEW_WINDOW_POLICY,
+            decision,
             req.uri()
         );
+        // the navigation filter wins over the new-window policy
+        match decision {
+            NavDecision::Allow => {}
+            NavDecision::External => return App::open_new_window_externally(req),
+            NavDecision::Block => return req.block(),
+        }
         match NEW_WINDOW_POLICY {
             NewWindowPolicy::Default => {
                 req.allow_default();
@@ -221,7 +350,16 @@ impl App {
             NewWindowPolicy::Block => req.block(),
             NewWindowPolicy::NavigateHere => req.navigate_here(),
             NewWindowPolicy::OwnWindow => App::open_popup(shared, opener, req),
+            NewWindowPolicy::External => App::open_new_window_externally(req),
         }
+    }
+
+    // Cancel the popup (window.open returns null) and hand the URI to the system browser.
+    fn open_new_window_externally(req: NewWindowRequest) -> windows_core::Result<()> {
+        let uri = req.uri().to_owned();
+        req.block()?;
+        open_external(&uri);
+        Ok(())
     }
 
     // Stage 2: open the request in our own App window.

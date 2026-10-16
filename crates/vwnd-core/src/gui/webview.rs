@@ -7,13 +7,14 @@ use webview2_com::{
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, CreateCoreWebView2EnvironmentWithOptions,
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment,
-        ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2WebMessageReceivedEventArgs,
+        ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings3,
+        ICoreWebView2WebMessageReceivedEventArgs,
     },
-    NewWindowRequestedEventHandler, WebMessageReceivedEventHandler,
-    WindowCloseRequestedEventHandler, take_pwstr,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
-use windows_core::{Error, HSTRING, PCWSTR, PWSTR};
+use windows_core::{Error, HSTRING, Interface, PCWSTR, PWSTR};
 
 use crate::gui::com::EventReg;
 
@@ -73,6 +74,24 @@ impl WebViewEnv {
 }
 
 // ============================================================
+// WebViewSettings
+// - applied per WebView (ICoreWebView2Settings / Settings3)
+// ============================================================
+
+#[derive(Clone, Copy, Debug)]
+pub struct WebViewSettings {
+    /// F12 / Inspect
+    pub dev_tools: bool,
+    /// Right-click menu
+    pub default_context_menus: bool,
+    /// Link URL shown at the bottom-left on hover
+    pub status_bar: bool,
+    /// Browser shortcuts such as F5, Ctrl+R, Ctrl+P, Ctrl+F
+    /// (editing keys like Ctrl+C/V keep working when disabled)
+    pub browser_accelerator_keys: bool,
+}
+
+// ============================================================
 // WebView
 // ============================================================
 
@@ -129,6 +148,21 @@ impl WebView {
     #[allow(dead_code)]
     pub fn post_string(&self, text: &str) -> windows_core::Result<()> {
         post_string(&self.wv, text)
+    }
+
+    pub fn apply_settings(&self, s: &WebViewSettings) -> windows_core::Result<()> {
+        unsafe {
+            let settings = self.wv.Settings()?;
+            settings.SetAreDevToolsEnabled(s.dev_tools)?;
+            settings.SetAreDefaultContextMenusEnabled(s.default_context_menus)?;
+            settings.SetIsStatusBarEnabled(s.status_bar)?;
+            // Settings3 needs a newer runtime: skip rather than fail on old runtimes
+            match settings.cast::<ICoreWebView2Settings3>() {
+                Ok(s3) => s3.SetAreBrowserAcceleratorKeysEnabled(s.browser_accelerator_keys)?,
+                Err(e) => eprintln!("[webview] ICoreWebView2Settings3 unavailable: {e}"),
+            }
+        }
+        Ok(())
     }
 
     /// Gives keyboard focus to the WebView (call when the host window gets focus).
@@ -416,6 +450,33 @@ impl WebViewHost {
         unsafe { self.view.wv.add_WindowCloseRequested(&handler, &mut token)? };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WindowCloseRequested(token) };
+        });
+        Ok(())
+    }
+
+    /// Top-level navigations (link clicks, redirects, location changes, Navigate*).
+    /// Return false from `cb` to cancel the navigation.
+    pub fn set_on_navigation_starting(
+        &mut self,
+        cb: impl Fn(&str) -> bool + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut raw = PWSTR::null();
+            unsafe { args.Uri(&mut raw)? };
+            let uri = take_pwstr(raw);
+            if !cb(&uri) {
+                unsafe { args.SetCancel(true)? };
+            }
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_NavigationStarting(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_NavigationStarting(token) };
         });
         Ok(())
     }

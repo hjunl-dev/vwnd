@@ -5,6 +5,7 @@ use windows::Win32::{
     Graphics::Gdi::{COLOR_WINDOW, HBRUSH},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
+        Shell::ShellExecuteW,
         HiDpi::{
             AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
@@ -13,7 +14,7 @@ use windows::Win32::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
             DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetForegroundWindow,
             GetMessageW, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE,
-            PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW,
+            PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNORMAL,
             SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
             ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
             WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
@@ -241,6 +242,28 @@ pub fn run_message_loop() -> windows_core::Result<i32> {
 // - fails (E_ACCESSDENIED) if the awareness was already set (e.g. by the app manifest)
 pub fn init_dpi_awareness() -> windows_core::Result<()> {
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+}
+
+// Opens `target` (URL, mailto:, ...) with the system default handler.
+// Only pass values the caller has already filtered: ShellExecute will launch
+// whatever is registered for the scheme.
+pub fn open_external(target: &str) -> windows_core::Result<()> {
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            windows_core::w!("open"),
+            &HSTRING::from(target),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // > 32 means success (HINSTANCE kept for 16-bit compatibility)
+    if result.0 as usize > 32 {
+        return Ok(());
+    }
+    unsafe { GetLastError() }.ok()?;
+    Err(E_FAIL.into())
 }
 
 // ============================================================
