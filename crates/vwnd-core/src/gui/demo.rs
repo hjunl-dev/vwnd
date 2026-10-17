@@ -72,3 +72,12 @@ pub const TEST_HTML: &str = r#"<!doctype html>
   }
 </script>
 </body></html>"#;
+
+/// Shown when the renderer fails again right after a reload (see RELOAD_COOLDOWN).
+pub const CRASH_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>Page crashed</title>
+<style>body { font-family: system-ui, sans-serif; margin: 48px; color: #333; }</style></head>
+<body>
+  <h2>The page stopped working</h2>
+  <p>It crashed again right after reloading, so it was not reloaded automatically.</p>
+</body></html>"#;

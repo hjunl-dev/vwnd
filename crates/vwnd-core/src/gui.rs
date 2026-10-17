@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 use windows::Win32::{
@@ -14,8 +15,8 @@ use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
     webview::{
-        NewWindowRequest, PendingNewWindow, WebMessage, WebView, WebViewEnv, WebViewHost,
-        WebViewSettings,
+        NewWindowRequest, PendingNewWindow, ProcessFailedEvent, ProcessFailure, WebMessage,
+        WebView, WebViewEnv, WebViewHost, WebViewSettings,
     },
 };
 
@@ -40,6 +41,9 @@ const START_PAGE: StartPage = StartPage::TestPage;
 // - popup without a window.open size: opener's DPI (same as window.open sizes)
 const MAIN_SIZE: (i32, i32) = (1280, 720);
 const POPUP_SIZE: (i32, i32) = (960, 640);
+
+// Renderer failure: reload, unless the last reload was this recent (crash loop -> error page)
+const RELOAD_COOLDOWN: Duration = Duration::from_secs(10);
 
 // ============================================================
 // NewWindowPolicy
@@ -288,6 +292,9 @@ impl App {
         })?;
         // set web message received callback (page -> host)
         host.set_on_web_message_received(App::handle_web_message)?;
+        // set process failed callback (per window: its own reload history)
+        let last_reload = Cell::new(None);
+        host.set_on_process_failed(move |ev| App::handle_process_failed(hwnd, &last_reload, ev))?;
         // inject the bridge (window.vwnd) into every document, before the first navigation
         view.add_script_on_document_created(demo::BRIDGE_JS)?;
 
@@ -310,6 +317,42 @@ impl App {
 
     // Page -> host messages. Demo protocol: echo back as {"type":"echo","data":<message>}.
     // In real use, check msg.source() before trusting the content.
+    // WebView2 process failures.
+    // - browser exited: every WebView on the shared environment is gone -> close the window
+    //   (each window gets the event, so the app quits once all are closed)
+    // - renderer exited / unresponsive: reload; a second failure within RELOAD_COOLDOWN
+    //   shows the crash page instead, so a page that always crashes doesn't loop forever
+    // - others (GPU, utility, frame renderer): WebView2 recovers by itself
+    fn handle_process_failed(
+        hwnd: HWND,
+        last_reload: &Cell<Option<Instant>>,
+        ev: ProcessFailedEvent,
+    ) {
+        eprintln!("[app] webview process failed: {:?}", ev.kind());
+        let result = match ev.kind() {
+            ProcessFailure::BrowserExited => {
+                mswin::post_close(hwnd);
+                Ok(())
+            }
+            ProcessFailure::RendererExited | ProcessFailure::RendererUnresponsive => {
+                let now = Instant::now();
+                let looping = last_reload
+                    .get()
+                    .is_some_and(|t| now.duration_since(t) < RELOAD_COOLDOWN);
+                if looping {
+                    ev.show_html(demo::CRASH_HTML)
+                } else {
+                    last_reload.set(Some(now));
+                    ev.reload()
+                }
+            }
+            ProcessFailure::Other(_) => Ok(()),
+        };
+        if let Err(e) = result {
+            eprintln!("[app] failed to recover from process failure: {e}");
+        }
+    }
+
     fn handle_web_message(msg: WebMessage) {
         eprintln!(
             "[app] web message from {}: {}",

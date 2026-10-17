@@ -5,12 +5,15 @@ use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, CreateCoreWebView2EnvironmentWithOptions,
-        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2Environment,
-        ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings3,
-        ICoreWebView2WebMessageReceivedEventArgs,
+        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
+        ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2NewWindowRequestedEventArgs,
+        ICoreWebView2Settings3, ICoreWebView2WebMessageReceivedEventArgs,
     },
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler, ProcessFailedEventHandler,
     WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
@@ -310,6 +313,45 @@ impl WebMessage {
 }
 
 // ============================================================
+// ProcessFailed
+// - passed to the ProcessFailed callback
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessFailure {
+    /// The browser process exited: this WebView and its environment are gone.
+    /// Only closing or recreating (new environment + controller) recovers.
+    BrowserExited,
+    /// The page's renderer exited: the view shows an error page until reloaded.
+    RendererExited,
+    /// The page's renderer stopped responding (it may still recover by itself).
+    RendererUnresponsive,
+    /// Frame renderer, GPU, utility process, ...: WebView2 recovers by itself.
+    Other(i32),
+}
+
+pub struct ProcessFailedEvent {
+    sender: ICoreWebView2,
+    kind: ProcessFailure,
+}
+
+impl ProcessFailedEvent {
+    pub fn kind(&self) -> ProcessFailure {
+        self.kind
+    }
+
+    /// Reloads the failed WebView (renderer failures only).
+    pub fn reload(&self) -> windows_core::Result<()> {
+        unsafe { self.sender.Reload() }
+    }
+
+    /// Replaces the page with the given HTML (renderer failures only).
+    pub fn show_html(&self, html: &str) -> windows_core::Result<()> {
+        unsafe { self.sender.NavigateToString(&HSTRING::from(html)) }
+    }
+}
+
+// ============================================================
 // PendingNewWindow
 // - deferred NewWindowRequested
 // - complete(): SetNewWindow (C++ put_NewWindow) + Deferral::Complete
@@ -497,6 +539,41 @@ impl WebViewHost {
         unsafe { self.view.wv.add_WebMessageReceived(&handler, &mut token)? };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WebMessageReceived(token) };
+        });
+        Ok(())
+    }
+
+    /// A WebView2 process (browser, renderer, GPU, ...) exited or hung.
+    pub fn set_on_process_failed(
+        &mut self,
+        cb: impl Fn(ProcessFailedEvent) + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+            let (Some(sender), Some(args)) = (sender, args) else {
+                return Ok(());
+            };
+            let mut raw = Default::default();
+            unsafe { args.ProcessFailedKind(&mut raw)? };
+            let kind = match raw {
+                COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => {
+                    ProcessFailure::BrowserExited
+                }
+                COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => {
+                    ProcessFailure::RendererExited
+                }
+                COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => {
+                    ProcessFailure::RendererUnresponsive
+                }
+                other => ProcessFailure::Other(other.0),
+            };
+            cb(ProcessFailedEvent { sender, kind });
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_ProcessFailed(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_ProcessFailed(token) };
         });
         Ok(())
     }
