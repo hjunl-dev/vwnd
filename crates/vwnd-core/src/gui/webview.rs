@@ -3,7 +3,7 @@ use std::path::Path;
 use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler,
+    DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -153,6 +153,17 @@ impl WebView {
         post_string(&self.wv, text)
     }
 
+    /// Runs `js` in the top-level document; `on_done` gets the result as JSON.
+    /// See `execute_script` (helpers) for what the result looks like.
+    #[allow(dead_code)]
+    pub fn execute_script(
+        &self,
+        js: &str,
+        on_done: impl FnOnce(windows_core::Result<String>) + 'static,
+    ) -> windows_core::Result<()> {
+        execute_script(&self.wv, js, on_done)
+    }
+
     pub fn apply_settings(&self, s: &WebViewSettings) -> windows_core::Result<()> {
         unsafe {
             let settings = self.wv.Settings()?;
@@ -252,6 +263,7 @@ impl NewWindowRequest {
 // - passed to the WebMessageReceived callback (chrome.webview.postMessage)
 // ============================================================
 
+#[derive(Clone)]
 pub struct WebMessage {
     sender: ICoreWebView2,
     source: String,
@@ -283,6 +295,15 @@ impl WebMessage {
     #[allow(dead_code)]
     pub fn reply_string(&self, text: &str) -> windows_core::Result<()> {
         post_string(&self.sender, text)
+    }
+
+    /// Runs `js` in the WebView that posted the message (see `WebView::execute_script`).
+    pub fn execute_script(
+        &self,
+        js: &str,
+        on_done: impl FnOnce(windows_core::Result<String>) + 'static,
+    ) -> windows_core::Result<()> {
+        execute_script(&self.sender, js, on_done)
     }
 
     fn from_args(
@@ -603,4 +624,23 @@ fn post_json(wv: &ICoreWebView2, json: &str) -> windows_core::Result<()> {
 
 fn post_string(wv: &ICoreWebView2, text: &str) -> windows_core::Result<()> {
     unsafe { wv.PostWebMessageAsString(&HSTRING::from(text)) }
+}
+
+// ExecuteScript
+// - runs in the top-level document only (not iframes)
+// - result = the script's completion value as JSON: `"null"` for undefined,
+//   `{}` for values JSON can't represent (DOM nodes, functions)
+// - a thrown exception is NOT reported as an error here: the result is just `"null"`
+//   (catch inside the script and return the error as a value if it matters)
+// - the callback runs later on the UI thread, possibly after the page navigated away
+fn execute_script(
+    wv: &ICoreWebView2,
+    js: &str,
+    on_done: impl FnOnce(windows_core::Result<String>) + 'static,
+) -> windows_core::Result<()> {
+    let handler = ExecuteScriptCompletedHandler::create(Box::new(move |res, json| {
+        on_done(res.map(|()| json));
+        Ok(())
+    }));
+    unsafe { wv.ExecuteScript(&HSTRING::from(js), &handler) }
 }

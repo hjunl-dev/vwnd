@@ -25,6 +25,15 @@ pub const BRIDGE_JS: &str = r#"(() => {
   });
 })();"#;
 
+/// Run by the host through ExecuteScript (the "probe" message in the test page).
+/// The completion value of the last expression becomes the JSON result.
+pub const PROBE_JS: &str = r#"({
+  title: document.title,
+  url: location.href,
+  viewport: [innerWidth, innerHeight],
+  devicePixelRatio,
+})"#;
+
 /// Test page for: NewWindowRequested, WindowCloseRequested, the WebMessage bridge,
 /// and navigation filtering.
 pub const TEST_HTML: &str = r#"<!doctype html>
@@ -50,6 +59,7 @@ pub const TEST_HTML: &str = r#"<!doctype html>
   <h3>Bridge</h3>
   <button onclick="vwnd.post({ type: 'ping', at: Date.now() })">post JSON</button>
   <button onclick="vwnd.post('hello from page')">post string</button>
+  <button onclick="vwnd.post('probe')">ask host to probe this page</button>
   <div id="log"></div>
 
   <h3>Navigation</h3>

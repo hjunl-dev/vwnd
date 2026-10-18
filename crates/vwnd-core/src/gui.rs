@@ -353,17 +353,43 @@ impl App {
         }
     }
 
+    // Page -> host messages. Demo protocol:
+    // - "probe" (string): run demo::PROBE_JS in the sender, reply {"type":"probe","data":<result>}
+    // - anything else: echo back as {"type":"echo","data":<message>}
+    // In real use, check msg.source() before trusting the content.
     fn handle_web_message(msg: WebMessage) {
         eprintln!(
             "[app] web message from {}: {}",
             msg.source(),
             msg.text().unwrap_or(msg.json())
         );
-        // msg.json() is already valid JSON, so it can be embedded as-is
-        let reply = format!(r#"{{"type":"echo","data":{}}}"#, msg.json());
-        if let Err(e) = msg.reply_json(&reply) {
-            eprintln!("[app] failed to reply web message: {e}");
+        let result = if msg.text() == Some("probe") {
+            App::probe_page(&msg)
+        } else {
+            // msg.json() is already valid JSON, so it can be embedded as-is
+            msg.reply_json(&format!(r#"{{"type":"echo","data":{}}}"#, msg.json()))
+        };
+        if let Err(e) = result {
+            eprintln!("[app] failed to handle web message: {e}");
         }
+    }
+
+    // Host -> page script with a result: the reply goes out when the script completes.
+    fn probe_page(msg: &WebMessage) -> windows_core::Result<()> {
+        let reply_to = msg.clone();
+        msg.execute_script(demo::PROBE_JS, move |res| {
+            // the result is JSON, so it can be embedded as-is
+            let reply = match res {
+                Ok(json) => format!(r#"{{"type":"probe","data":{json}}}"#),
+                Err(e) => {
+                    eprintln!("[app] probe script failed: {e}");
+                    r#"{"type":"probe","error":"script failed"}"#.to_owned()
+                }
+            };
+            if let Err(e) = reply_to.reply_json(&reply) {
+                eprintln!("[app] failed to reply probe: {e}");
+            }
+        })
     }
 
     // Called inside the opener's NewWindowRequested callback.
