@@ -240,6 +240,24 @@ impl NewWindowRequest {
         &self.uri
     }
 
+    /// Position requested by window.open features (e.g. "left=100,top=50"):
+    /// the outer window's top-left in screen DIPs (CSS px).
+    /// Use mswin::screen_point_for_dip to get the position for create_wnd.
+    pub fn requested_position(&self) -> Option<(i32, i32)> {
+        let features = unsafe { self.args.WindowFeatures() }.ok()?;
+        let mut has_position = Default::default();
+        unsafe { features.HasPosition(&mut has_position) }.ok()?;
+        if !has_position.as_bool() {
+            return None;
+        }
+        let (mut x, mut y) = (0u32, 0u32);
+        unsafe {
+            features.Left(&mut x).ok()?;
+            features.Top(&mut y).ok()?;
+        }
+        Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?))
+    }
+
     /// Size requested by window.open features (e.g. "width=400,height=300").
     /// Note: this is the content size in DIPs (CSS px), not the outer window size.
     /// Use mswin::outer_size_for_client_dip to get the size for create_wnd.

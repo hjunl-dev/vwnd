@@ -227,7 +227,7 @@ impl App {
 
         let main = Rc::new(App::new(shared.clone(), Initial::Start(START_PAGE)));
         let (w, h) = mswin::outer_size_for_client_dip(None, MAIN_SIZE.0, MAIN_SIZE.1)?;
-        let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", w, h, main)?;
+        let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", None, w, h, main)?;
         mswin::show(hwnd);
 
         let _exit_code = mswin::run_message_loop()?;
@@ -449,11 +449,13 @@ impl App {
         opener: HWND,
         req: NewWindowRequest,
     ) -> windows_core::Result<()> {
-        // window.open features give a content size in DIPs
+        // window.open features give a content size and an outer position, both in DIPs
+        // (read before defer(), which consumes the request)
         let (cw, ch) = req
             .requested_size()
             .and_then(|(w, h)| Some((i32::try_from(w).ok()?, i32::try_from(h).ok()?)))
             .unwrap_or(POPUP_SIZE);
+        let req_pos = req.requested_position();
 
         // Hold the request first: from here on, any failure drops the pending request,
         // which cancels it instead of falling back to the WebView2 default popup.
@@ -461,9 +463,11 @@ impl App {
 
         // DIP content size -> physical outer size, using the opener's DPI
         let (w, h) = mswin::outer_size_for_client_dip(Some(opener), cw, ch)?;
+        // DIP screen position -> physical; off every monitor (or none requested) -> system default
+        let pos = req_pos.and_then(|(x, y)| mswin::screen_point_for_dip(opener, x, y));
 
         let popup = Rc::new(App::new(shared.clone(), Initial::NewWindow(pending)));
-        let hwnd = shared.wnd_class.create_wnd("vwnd_popup", w, h, popup)?;
+        let hwnd = shared.wnd_class.create_wnd("vwnd_popup", pos, w, h, popup)?;
         mswin::show(hwnd);
         Ok(())
     }

@@ -1,8 +1,13 @@
 use std::{cell::Cell, ffi::c_void, marker::PhantomData, rc::Rc};
 
 use windows::Win32::{
-    Foundation::{COLORREF, E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{COLOR_WINDOW, CreateSolidBrush, DeleteObject, FillRect, HBRUSH, HDC},
+    Foundation::{
+        COLORREF, E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    },
+    Graphics::Gdi::{
+        COLOR_WINDOW, CreateSolidBrush, DeleteObject, FillRect, HBRUSH, HDC, MONITOR_DEFAULTTONULL,
+        MonitorFromPoint,
+    },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::ShellExecuteW,
@@ -96,10 +101,12 @@ impl<H: WindowHandler> WindowClass<H> {
     }
 
     // CreateWindowExW
+    // - pos: outer top-left in physical screen pixels, None = CW_USEDEFAULT
     // - w, h: outer window size in physical pixels
     pub fn create_wnd(
         &self,
         title: &str,
+        pos: Option<(i32, i32)>,
         w: i32,
         h: i32,
         handler: Rc<H>,
@@ -108,6 +115,7 @@ impl<H: WindowHandler> WindowClass<H> {
             handler: Cell::new(Some(handler)),
             error: Cell::new(None),
         };
+        let (x, y) = pos.unwrap_or((CW_USEDEFAULT, CW_USEDEFAULT));
         let result = unsafe {
             let lpparam = &context as *const CreateWindowContext<H> as *const c_void;
             CreateWindowExW(
@@ -115,8 +123,8 @@ impl<H: WindowHandler> WindowClass<H> {
                 self.name,
                 &HSTRING::from(title),
                 WND_STYLE,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                x,
+                y,
                 w,
                 h,
                 None,
@@ -329,21 +337,43 @@ pub fn outer_size_for_client_dip(
     w: i32,
     h: i32,
 ) -> windows_core::Result<(i32, i32)> {
+    let dpi = dpi_of(reference);
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: dip_to_px(w, dpi),
+        bottom: dip_to_px(h, dpi),
+    };
+    unsafe { AdjustWindowRectExForDpi(&mut rect, WND_STYLE, false, WND_EX_STYLE, dpi)? };
+    Ok((rect.right - rect.left, rect.bottom - rect.top))
+}
+
+// Converts a screen position in DIPs (e.g. window.open left/top) to physical pixels.
+// - scaled by the reference window's DPI: exact on a single monitor / uniform scaling;
+//   with mixed-DPI monitors it is an approximation
+// - None if the result lands on no monitor (the caller should let the system place it)
+pub fn screen_point_for_dip(reference: HWND, x: i32, y: i32) -> Option<(i32, i32)> {
+    let dpi = dpi_of(Some(reference));
+    let pt = POINT {
+        x: dip_to_px(x, dpi),
+        y: dip_to_px(y, dpi),
+    };
+    let monitor = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) };
+    (!monitor.is_invalid()).then_some((pt.x, pt.y))
+}
+
+// DPI of a window, or the system DPI when there is none yet (0 -> 96)
+fn dpi_of(reference: Option<HWND>) -> u32 {
     let dpi = match reference {
         Some(hwnd) => unsafe { GetDpiForWindow(hwnd) },
         None => unsafe { GetDpiForSystem() },
     };
-    let dpi = if dpi == 0 { BASE_DPI } else { dpi };
-    let scale = |v: i32| ((v as i64 * dpi as i64 + (BASE_DPI / 2) as i64) / BASE_DPI as i64) as i32;
+    if dpi == 0 { BASE_DPI } else { dpi }
+}
 
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: scale(w),
-        bottom: scale(h),
-    };
-    unsafe { AdjustWindowRectExForDpi(&mut rect, WND_STYLE, false, WND_EX_STYLE, dpi)? };
-    Ok((rect.right - rect.left, rect.bottom - rect.top))
+// DIP -> physical pixels, rounded to nearest
+fn dip_to_px(v: i32, dpi: u32) -> i32 {
+    ((i64::from(v) * i64::from(dpi) + i64::from(BASE_DPI / 2)) / i64::from(BASE_DPI)) as i32
 }
 
 // WM_DPICHANGED: resize/move the window to the rect suggested by the system.
