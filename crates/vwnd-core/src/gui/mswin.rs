@@ -1,8 +1,8 @@
 use std::{cell::Cell, ffi::c_void, marker::PhantomData, rc::Rc};
 
 use windows::Win32::{
-    Foundation::{E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{COLOR_WINDOW, HBRUSH},
+    Foundation::{COLORREF, E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{COLOR_WINDOW, CreateSolidBrush, DeleteObject, FillRect, HBRUSH, HDC},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::ShellExecuteW,
@@ -290,6 +290,26 @@ pub fn client_rect(hwnd: HWND) -> windows_core::Result<RECT> {
     let mut rect = RECT::default();
     unsafe { GetClientRect(hwnd, &mut rect)? };
     Ok(rect)
+}
+
+// WM_ERASEBKGND: fills the client area with a solid color (wParam = the HDC to paint).
+// Returns false if nothing was painted, so the caller can fall back to DefWindowProcW.
+pub fn erase_background(hwnd: HWND, wparam: WPARAM, (r, g, b): (u8, u8, u8)) -> bool {
+    let hdc = HDC(wparam.0 as *mut c_void);
+    let Ok(rect) = client_rect(hwnd) else {
+        return false;
+    };
+    // COLORREF = 0x00BBGGRR
+    let color = COLORREF(u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16));
+    unsafe {
+        let brush = CreateSolidBrush(color);
+        if brush.is_invalid() {
+            return false;
+        }
+        FillRect(hdc, &rect, brush);
+        let _ = DeleteObject(brush.into());
+    }
+    true
 }
 
 pub fn set_title(hwnd: HWND, title: &str) -> windows_core::Result<()> {

@@ -7,7 +7,9 @@ use std::{
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    UI::WindowsAndMessaging::{WM_DESTROY, WM_DPICHANGED, WM_MOVE, WM_SETFOCUS, WM_SIZE},
+    UI::WindowsAndMessaging::{
+        WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_MOVE, WM_SETFOCUS, WM_SIZE,
+    },
 };
 use windows_core::w;
 
@@ -16,7 +18,7 @@ use crate::gui::{
     mswin::{WindowClass, WindowHandler},
     webview::{
         NewWindowRequest, PendingNewWindow, ProcessFailedEvent, ProcessFailure, WebMessage,
-        WebView, WebViewEnv, WebViewHost, WebViewSettings,
+        WebView, WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
     },
 };
 
@@ -44,6 +46,14 @@ const POPUP_SIZE: (i32, i32) = (960, 640);
 
 // Renderer failure: reload, unless the last reload was this recent (crash loop -> error page)
 const RELOAD_COOLDOWN: Duration = Duration::from_secs(10);
+
+// What shows before the page paints. The window (WM_ERASEBKGND) and the WebView use the
+// same color, so startup goes window -> WebView -> page without a white flash in between.
+// (A page that paints its own white background still switches to white when it loads.)
+const BACKGROUND_RGB: (u8, u8, u8) = (0x20, 0x20, 0x20);
+const WEBVIEW_BACKGROUND: WebViewBackground =
+    WebViewBackground::Rgb(BACKGROUND_RGB.0, BACKGROUND_RGB.1, BACKGROUND_RGB.2);
+// const WEBVIEW_BACKGROUND: WebViewBackground = WebViewBackground::Transparent;
 
 // ============================================================
 // NewWindowPolicy
@@ -254,6 +264,8 @@ impl App {
         let view = host.view();
         // set bounds to ClientRect
         view.set_bounds(mswin::client_rect(hwnd)?)?;
+        // background before the first paint
+        view.set_background(WEBVIEW_BACKGROUND)?;
         // set visible
         view.set_visible(true)?;
         // settings (before the first navigation / SetNewWindow)
@@ -543,10 +555,14 @@ impl WindowHandler for App {
         self: &Rc<Self>,
         hwnd: HWND,
         msg: u32,
-        _wparam: WPARAM,
+        wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<LRESULT> {
         match msg {
+            // nonzero = erased; otherwise DefWindowProcW paints the class brush
+            WM_ERASEBKGND => {
+                mswin::erase_background(hwnd, wparam, BACKGROUND_RGB).then_some(LRESULT(1))
+            }
             WM_SIZE => {
                 self.resize_webview();
                 Some(LRESULT(0))

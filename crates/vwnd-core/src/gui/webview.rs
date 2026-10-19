@@ -9,8 +9,9 @@ use webview2_com::{
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
-        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
-        ICoreWebView2Deferral, ICoreWebView2Environment, ICoreWebView2NewWindowRequestedEventArgs,
+        COREWEBVIEW2_COLOR, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
+        ICoreWebView2Controller, ICoreWebView2Controller2, ICoreWebView2Deferral,
+        ICoreWebView2Environment, ICoreWebView2NewWindowRequestedEventArgs,
         ICoreWebView2Settings3, ICoreWebView2WebMessageReceivedEventArgs,
     },
     NavigationStartingEventHandler, NewWindowRequestedEventHandler, ProcessFailedEventHandler,
@@ -95,6 +96,21 @@ pub struct WebViewSettings {
 }
 
 // ============================================================
+// WebViewBackground
+// - shown where the page paints nothing: before the first paint,
+//   and behind a page whose own background is transparent
+// - WebView2 accepts only fully opaque or fully transparent (no partial alpha)
+// ============================================================
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub enum WebViewBackground {
+    Rgb(u8, u8, u8),
+    /// The host window shows through (for overlay-style UI)
+    Transparent,
+}
+
+// ============================================================
 // WebView
 // ============================================================
 
@@ -111,6 +127,22 @@ impl WebView {
 
     pub fn set_visible(&self, visible: bool) -> windows_core::Result<()> {
         unsafe { self.ctrl.SetIsVisible(visible) }
+    }
+
+    /// Set right after the controller is created, before the first paint.
+    /// ICoreWebView2Controller2 needs a newer runtime: skipped (logged) on old runtimes.
+    pub fn set_background(&self, bg: WebViewBackground) -> windows_core::Result<()> {
+        let color = match bg {
+            WebViewBackground::Rgb(r, g, b) => COREWEBVIEW2_COLOR { A: 255, R: r, G: g, B: b },
+            WebViewBackground::Transparent => COREWEBVIEW2_COLOR { A: 0, R: 0, G: 0, B: 0 },
+        };
+        match self.ctrl.cast::<ICoreWebView2Controller2>() {
+            Ok(ctrl2) => unsafe { ctrl2.SetDefaultBackgroundColor(color) },
+            Err(e) => {
+                eprintln!("[webview] ICoreWebView2Controller2 unavailable: {e}");
+                Ok(())
+            }
+        }
     }
 
     pub fn navigate(&self, url: &str) -> windows_core::Result<()> {
