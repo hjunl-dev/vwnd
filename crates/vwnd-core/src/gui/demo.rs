@@ -34,21 +34,25 @@ pub const PROBE_JS: &str = r#"({
   devicePixelRatio,
 })"#;
 
+/// Dark, matching BACKGROUND_RGB in gui.rs, so loading it causes no color switch.
 /// Test page for: NewWindowRequested, WindowCloseRequested, the WebMessage bridge,
 /// and navigation filtering.
 pub const TEST_HTML: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>vwnd test</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 24px; }
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 24px; background: #202020; color: #e6e6e6; }
+  a { color: #8ab4f8; }
   h3 { margin: 20px 0 8px; }
   button { margin: 2px 4px 2px 0; }
-  #log { background: #f4f4f4; padding: 8px; min-height: 4em; white-space: pre-wrap; }
+  #log { background: #2a2a2a; padding: 8px; min-height: 4em; white-space: pre-wrap; }
 </style></head>
 <body>
   <h3>New window</h3>
   <a href="https://example.com/" target="_blank">target=_blank link</a><br>
   <button onclick="window.open('https://example.org/')">window.open</button>
   <button onclick="window.open('https://example.net/', 'popup', 'width=400,height=300')">window.open 400x300</button>
+  <button onclick="window.open('https://example.net/?pos', 'popup2', 'left=80,top=80,width=400,height=300')">window.open at (80, 80)</button>
   <button onclick="setTimeout(() => window.open('https://example.com/?delayed'), 1500)">delayed (no gesture)</button>
   <button onclick="openSelfTest()">popup with this page</button>
 
@@ -86,7 +90,10 @@ pub const TEST_HTML: &str = r#"<!doctype html>
 /// Shown when the renderer fails again right after a reload (see RELOAD_COOLDOWN).
 pub const CRASH_HTML: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>Page crashed</title>
-<style>body { font-family: system-ui, sans-serif; margin: 48px; color: #333; }</style></head>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 48px; background: #202020; color: #e6e6e6; }
+</style></head>
 <body>
   <h2>The page stopped working</h2>
   <p>It crashed again right after reloading, so it was not reloaded automatically.</p>

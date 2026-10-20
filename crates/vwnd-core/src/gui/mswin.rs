@@ -410,3 +410,18 @@ pub fn post_quit(exit_code: i32) {
         PostQuitMessage(exit_code);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dip_to_px_scales_and_rounds() {
+        assert_eq!(dip_to_px(100, 96), 100); // 100%
+        assert_eq!(dip_to_px(100, 120), 125); // 125%
+        assert_eq!(dip_to_px(100, 144), 150); // 150%
+        assert_eq!(dip_to_px(101, 120), 126); // 126.25 -> 126
+        assert_eq!(dip_to_px(102, 120), 128); // 127.5 -> 128
+        assert_eq!(dip_to_px(0, 192), 0);
+    }
+}

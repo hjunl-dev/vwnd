@@ -16,6 +16,7 @@ use windows_core::w;
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
+    nav::{NavDecision, NavPolicy},
     webview::{
         NewWindowRequest, PendingNewWindow, ProcessFailedEvent, ProcessFailure, WebMessage,
         WebView, WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
@@ -25,6 +26,7 @@ use crate::gui::{
 mod com;
 mod demo;
 mod mswin;
+mod nav;
 mod webview;
 
 // What the main window loads first
@@ -82,79 +84,18 @@ const NEW_WINDOW_POLICY: NewWindowPolicy = NewWindowPolicy::OwnWindow;
 // - applied to top-level navigations (NavigationStarting) and new-window requests
 // ============================================================
 
-// http(s) hosts that stay in the app (subdomains included).
-// - None: every http(s) host stays in the app
-// - Some(hosts): other hosts open in the system browser
-const IN_APP_HOSTS: Option<&[&str]> = None;
-// const IN_APP_HOSTS: Option<&[&str]> = Some(&["example.com", "google.com"]);
-
-// Non-http(s) schemes handed to the system (others are blocked)
-const EXTERNAL_SCHEMES: &[&str] = &["mailto", "tel"];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NavDecision {
-    Allow,
-    External,
-    Block,
-}
-
-fn classify_navigation(uri: &str) -> NavDecision {
-    let Some((scheme, rest)) = uri.split_once(':') else {
-        return NavDecision::Block;
-    };
-    let scheme = scheme.to_ascii_lowercase();
-    match scheme.as_str() {
-        // NavigateToString / window.open('') / blob documents
-        "about" | "data" | "blob" => NavDecision::Allow,
-        "http" | "https" => {
-            let Some(allowed) = IN_APP_HOSTS else {
-                return NavDecision::Allow;
-            };
-            match url_host(rest) {
-                Some(host) if host_matches(&host, allowed) => NavDecision::Allow,
-                Some(_) => NavDecision::External,
-                None => NavDecision::Block,
-            }
-        }
-        s if EXTERNAL_SCHEMES.contains(&s) => NavDecision::External,
-        _ => NavDecision::Block,
-    }
-}
-
-// "//user@Host:8080/path?q" -> "host"
-fn url_host(after_scheme: &str) -> Option<String> {
-    let authority = after_scheme.strip_prefix("//")?;
-    let authority = authority.split(['/', '?', '#']).next()?;
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
-    let host = if let Some(v6) = host_port.strip_prefix('[') {
-        v6.split_once(']')?.0
-    } else {
-        host_port.split(':').next()?
-    };
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
-}
-
-fn host_matches(host: &str, allowed: &[&str]) -> bool {
-    allowed.iter().any(|a| {
-        host == *a
-            || host
-                .strip_suffix(a)
-                .is_some_and(|prefix| prefix.ends_with('.'))
-    })
-}
-
-// Only http(s) and EXTERNAL_SCHEMES are ever handed to ShellExecute
-// (about:/data:/blob: only make sense inside the app; unknown schemes may launch apps).
-fn can_open_externally(uri: &str) -> bool {
-    let Some((scheme, _)) = uri.split_once(':') else {
-        return false;
-    };
-    let scheme = scheme.to_ascii_lowercase();
-    matches!(scheme.as_str(), "http" | "https") || EXTERNAL_SCHEMES.contains(&scheme.as_str())
-}
+// Which navigations stay in the app (see gui/nav.rs for the rules)
+// - in_app_hosts: None = every http(s) host stays in the app;
+//   Some(hosts) = those hosts and their subdomains stay, others open in the system browser
+// - external_schemes: non-http(s) schemes handed to the system (others are blocked)
+const NAV_POLICY: NavPolicy<'static> = NavPolicy {
+    in_app_hosts: None,
+    // in_app_hosts: Some(&["example.com", "google.com"]),
+    external_schemes: &["mailto", "tel"],
+};
 
 fn open_external(uri: &str) {
-    if !can_open_externally(uri) {
+    if !NAV_POLICY.can_open_externally(uri) {
         eprintln!("[app] not opening externally: {uri}");
         return;
     }
@@ -271,7 +212,7 @@ impl App {
         // settings (before the first navigation / SetNewWindow)
         view.apply_settings(&webview_settings())?;
         // navigation filter
-        host.set_on_navigation_starting(|uri| match classify_navigation(uri) {
+        host.set_on_navigation_starting(|uri| match NAV_POLICY.classify(uri) {
             NavDecision::Allow => true,
             NavDecision::External => {
                 open_external(uri);
@@ -410,7 +351,7 @@ impl App {
         opener: HWND,
         req: NewWindowRequest,
     ) -> windows_core::Result<()> {
-        let decision = classify_navigation(req.uri());
+        let decision = NAV_POLICY.classify(req.uri());
         eprintln!(
             "[app] new window requested ({:?}, {:?}): {}",
             NEW_WINDOW_POLICY,
