@@ -10,16 +10,16 @@ use windows::Win32::{
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
-        Shell::ShellExecuteW,
         HiDpi::{
-            AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-            GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
+            AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
+            GetDpiForWindow, SetProcessDpiAwarenessContext,
         },
+        Shell::ShellExecuteW,
         WindowsAndMessaging::{
-            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
-            DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetForegroundWindow,
-            GetMessageW, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE,
-            PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNORMAL,
+            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+            DispatchMessageW, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
+            GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+            PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNORMAL,
             SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
             ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
             WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,

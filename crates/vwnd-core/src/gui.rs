@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
@@ -16,7 +17,7 @@ use windows_core::w;
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
-    nav::{NavDecision, NavPolicy},
+    nav::{NavDecision, NavPolicy, normalize_user_url},
     webview::{
         NewWindowRequest, PendingNewWindow, ProcessFailedEvent, ProcessFailure, WebMessage,
         WebView, WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
@@ -30,16 +31,29 @@ mod nav;
 mod webview;
 
 // What the main window loads first
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 #[allow(dead_code)]
 enum StartPage {
-    Url(&'static str),
+    Url(Cow<'static, str>),
     /// built-in page for testing popups, close, the bridge and navigation filtering
     TestPage,
 }
 
+// Used when no URL is given on the command line (`vwnd.exe [url]`)
 const START_PAGE: StartPage = StartPage::TestPage;
-// const START_PAGE: StartPage = StartPage::Url("https://www.google.com/");
+// const START_PAGE: StartPage = StartPage::Url(Cow::Borrowed("https://www.google.com/"));
+
+// `vwnd.exe [url]`: a URL argument overrides START_PAGE
+// - "example.com" (no scheme) -> "https://example.com" (nav::normalize_user_url)
+// - it still goes through NAV_POLICY like any navigation, so a blocked URL shows nothing
+fn start_page_from_args() -> StartPage {
+    // args_os: std::env::args() panics on an argument that isn't valid Unicode
+    match std::env::args_os().nth(1) {
+        Some(arg) => StartPage::Url(Cow::Owned(normalize_user_url(&arg.to_string_lossy()))),
+        None => START_PAGE,
+    }
+}
+
 // Window content sizes in DIPs (scaled to physical pixels by DPI)
 // - main window: system DPI
 // - popup without a window.open size: opener's DPI (same as window.open sizes)
@@ -166,7 +180,10 @@ impl App {
             open_windows: Cell::new(0),
         });
 
-        let main = Rc::new(App::new(shared.clone(), Initial::Start(START_PAGE)));
+        let main = Rc::new(App::new(
+            shared.clone(),
+            Initial::Start(start_page_from_args()),
+        ));
         let (w, h) = mswin::outer_size_for_client_dip(None, MAIN_SIZE.0, MAIN_SIZE.1)?;
         let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", None, w, h, main)?;
         mswin::show(hwnd);
@@ -261,7 +278,7 @@ impl App {
         // For popups, every setting/handler above must be in place before SetNewWindow.
         let initial = self.initial.borrow_mut().take();
         match initial {
-            Some(Initial::Start(StartPage::Url(url))) => view.navigate(url),
+            Some(Initial::Start(StartPage::Url(url))) => view.navigate(&url),
             Some(Initial::Start(StartPage::TestPage)) => view.navigate_to_string(demo::TEST_HTML),
             Some(Initial::NewWindow(pending)) => pending.complete(&view),
             None => Ok(()),
@@ -408,7 +425,9 @@ impl App {
         let pos = req_pos.and_then(|(x, y)| mswin::screen_point_for_dip(opener, x, y));
 
         let popup = Rc::new(App::new(shared.clone(), Initial::NewWindow(pending)));
-        let hwnd = shared.wnd_class.create_wnd("vwnd_popup", pos, w, h, popup)?;
+        let hwnd = shared
+            .wnd_class
+            .create_wnd("vwnd_popup", pos, w, h, popup)?;
         mswin::show(hwnd);
         Ok(())
     }

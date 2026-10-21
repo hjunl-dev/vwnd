@@ -5,14 +5,14 @@ use webview2_com::{
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
+        COREWEBVIEW2_COLOR, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
         COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
-        COREWEBVIEW2_COLOR, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
-        ICoreWebView2Controller, ICoreWebView2Controller2, ICoreWebView2Deferral,
-        ICoreWebView2Environment, ICoreWebView2NewWindowRequestedEventArgs,
-        ICoreWebView2Settings3, ICoreWebView2WebMessageReceivedEventArgs,
+        CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
+        ICoreWebView2Controller2, ICoreWebView2Deferral, ICoreWebView2Environment,
+        ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings3,
+        ICoreWebView2WebMessageReceivedEventArgs,
     },
     NavigationStartingEventHandler, NewWindowRequestedEventHandler, ProcessFailedEventHandler,
     WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
@@ -133,8 +133,18 @@ impl WebView {
     /// ICoreWebView2Controller2 needs a newer runtime: skipped (logged) on old runtimes.
     pub fn set_background(&self, bg: WebViewBackground) -> windows_core::Result<()> {
         let color = match bg {
-            WebViewBackground::Rgb(r, g, b) => COREWEBVIEW2_COLOR { A: 255, R: r, G: g, B: b },
-            WebViewBackground::Transparent => COREWEBVIEW2_COLOR { A: 0, R: 0, G: 0, B: 0 },
+            WebViewBackground::Rgb(r, g, b) => COREWEBVIEW2_COLOR {
+                A: 255,
+                R: r,
+                G: g,
+                B: b,
+            },
+            WebViewBackground::Transparent => COREWEBVIEW2_COLOR {
+                A: 0,
+                R: 0,
+                G: 0,
+                B: 0,
+            },
         };
         match self.ctrl.cast::<ICoreWebView2Controller2>() {
             Ok(ctrl2) => unsafe { ctrl2.SetDefaultBackgroundColor(color) },
@@ -158,14 +168,13 @@ impl WebView {
     /// Applies to navigations started after this call, so add scripts before
     /// `navigate*` / `PendingNewWindow::complete`.
     pub fn add_script_on_document_created(&self, js: &str) -> windows_core::Result<()> {
-        let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
-            |res, _id| {
+        let handler =
+            AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|res, _id| {
                 if let Err(e) = res {
                     eprintln!("[webview] failed to add document-created script: {e}");
                 }
                 Ok(())
-            },
-        ));
+            }));
         unsafe {
             self.wv
                 .AddScriptToExecuteOnDocumentCreated(&HSTRING::from(js), &handler)
@@ -213,7 +222,10 @@ impl WebView {
 
     /// Gives keyboard focus to the WebView (call when the host window gets focus).
     pub fn focus(&self) -> windows_core::Result<()> {
-        unsafe { self.ctrl.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) }
+        unsafe {
+            self.ctrl
+                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+        }
     }
 
     /// Call when the host (or an ancestor) window moves, so popups such as
@@ -430,7 +442,10 @@ impl ProcessFailedEvent {
 // ============================================================
 
 pub struct PendingNewWindow {
-    inner: Option<(ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Deferral)>,
+    inner: Option<(
+        ICoreWebView2NewWindowRequestedEventArgs,
+        ICoreWebView2Deferral,
+    )>,
 }
 
 impl PendingNewWindow {
@@ -560,7 +575,11 @@ impl WebViewHost {
         }));
 
         let mut token = Default::default();
-        unsafe { self.view.wv.add_WindowCloseRequested(&handler, &mut token)? };
+        unsafe {
+            self.view
+                .wv
+                .add_WindowCloseRequested(&handler, &mut token)?
+        };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WindowCloseRequested(token) };
         });

@@ -56,6 +56,19 @@ impl NavPolicy<'_> {
     }
 }
 
+/// Turns what a user typed (command line, address box) into a URL to navigate to:
+/// trimmed, and "https://" added when there is no scheme ("example.com", "localhost:8080").
+/// Kept as-is: "<scheme>://...", "about:...", "data:...".
+pub fn normalize_user_url(input: &str) -> String {
+    let input = input.trim();
+    let lower = input.to_ascii_lowercase();
+    if input.contains("://") || lower.starts_with("about:") || lower.starts_with("data:") {
+        input.to_owned()
+    } else {
+        format!("https://{input}")
+    }
+}
+
 // "HTTPS://x" -> ("https", "//x")
 fn split_scheme(uri: &str) -> Option<(String, &str)> {
     let (scheme, rest) = uri.split_once(':')?;
@@ -102,7 +115,11 @@ mod tests {
 
     #[test]
     fn in_app_documents_are_allowed() {
-        for uri in ["about:blank", "data:text/html,<p>x</p>", "blob:https://example.com/id"] {
+        for uri in [
+            "about:blank",
+            "data:text/html,<p>x</p>",
+            "blob:https://example.com/id",
+        ] {
             assert_eq!(OPEN.classify(uri), NavDecision::Allow, "{uri}");
             assert_eq!(LIMITED.classify(uri), NavDecision::Allow, "{uri}");
         }
@@ -175,16 +192,54 @@ mod tests {
         for uri in ["https://x.y/", "HTTP://x.y", "mailto:a@b.c", "tel:123"] {
             assert!(OPEN.can_open_externally(uri), "{uri}");
         }
-        for uri in ["about:blank", "data:,x", "file:///C:/", "ms-settings:", "no-scheme"] {
+        for uri in [
+            "about:blank",
+            "data:,x",
+            "file:///C:/",
+            "ms-settings:",
+            "no-scheme",
+        ] {
             assert!(!OPEN.can_open_externally(uri), "{uri}");
         }
     }
 
     #[test]
+    fn user_url_gets_https_when_scheme_is_missing() {
+        assert_eq!(normalize_user_url("example.com"), "https://example.com");
+        assert_eq!(
+            normalize_user_url("localhost:8080/x"),
+            "https://localhost:8080/x"
+        );
+        assert_eq!(
+            normalize_user_url("  example.com/a?b  "),
+            "https://example.com/a?b"
+        );
+    }
+
+    #[test]
+    fn user_url_with_scheme_is_kept() {
+        for url in [
+            "https://a.b/",
+            "http://localhost:3000",
+            "about:blank",
+            "ABOUT:blank",
+            "data:text/html,x",
+        ] {
+            assert_eq!(normalize_user_url(url), url, "{url}");
+        }
+    }
+
+    #[test]
     fn url_host_extracts_lowercase_host() {
-        assert_eq!(url_host("//Example.COM/path").as_deref(), Some("example.com"));
+        assert_eq!(
+            url_host("//Example.COM/path").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(url_host("//u:p@host:1234/").as_deref(), Some("host"));
-        assert_eq!(url_host("//[2001:db8::1]:8080/").as_deref(), Some("2001:db8::1"));
+        assert_eq!(
+            url_host("//[2001:db8::1]:8080/").as_deref(),
+            Some("2001:db8::1")
+        );
         assert_eq!(url_host("no-slashes"), None);
         assert_eq!(url_host("//"), None);
     }
