@@ -19,8 +19,9 @@ use crate::gui::{
     mswin::{WindowClass, WindowHandler},
     nav::{NavDecision, NavPolicy, normalize_user_url},
     webview::{
-        NewWindowRequest, PendingNewWindow, ProcessFailedEvent, ProcessFailure, WebMessage,
-        WebView, WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
+        NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow,
+        ProcessFailedEvent, ProcessFailure, WebMessage, WebView, WebViewBackground, WebViewEnv,
+        WebViewHost, WebViewSettings,
     },
 };
 
@@ -265,6 +266,8 @@ impl App {
         // set process failed callback (per window: its own reload history)
         let last_reload = Cell::new(None);
         host.set_on_process_failed(move |ev| App::handle_process_failed(hwnd, &last_reload, ev))?;
+        // set navigation completed callback (error page for unreachable pages)
+        host.set_on_navigation_completed(App::handle_navigation_completed)?;
         // inject the bridge (window.vwnd) into every document, before the first navigation
         view.add_script_on_document_created(demo::BRIDGE_JS)?;
 
@@ -287,6 +290,31 @@ impl App {
 
     // Page -> host messages. Demo protocol: echo back as {"type":"echo","data":<message>}.
     // In real use, check msg.source() before trusting the content.
+    // Top-level navigation results.
+    // - network / certificate errors: replace WebView2's error page with the app's own
+    // - canceled: normal (NAV_POLICY blocked it, a newer navigation replaced it, a download)
+    // - other (auth required, bad response, ...): logged, WebView2's own handling stays
+    fn handle_navigation_completed(ev: NavigationCompletedEvent) {
+        let Some(err) = ev.error() else {
+            return;
+        };
+        if err.kind == NavErrorKind::Canceled {
+            return;
+        }
+        eprintln!(
+            "[app] navigation failed ({:?}, {}): {}",
+            err.kind,
+            err.status,
+            ev.uri()
+        );
+        if !matches!(err.kind, NavErrorKind::Network | NavErrorKind::Certificate) {
+            return;
+        }
+        if let Err(e) = ev.show_html(&demo::error_page_html(ev.uri(), err.status)) {
+            eprintln!("[app] failed to show error page: {e}");
+        }
+    }
+
     // WebView2 process failures.
     // - browser exited: every WebView on the shared environment is gone -> close the window
     //   (each window gets the event, so the app quits once all are closed)

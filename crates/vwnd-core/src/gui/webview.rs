@@ -14,6 +14,7 @@ use webview2_com::{
         ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings3,
         ICoreWebView2WebMessageReceivedEventArgs,
     },
+    Microsoft::Web::WebView2::Win32 as wv2, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler, ProcessFailedEventHandler,
     WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
@@ -396,6 +397,102 @@ impl WebMessage {
 }
 
 // ============================================================
+// NavigationCompleted
+// - passed to the NavigationCompleted callback (top-level navigations only)
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavErrorKind {
+    /// Cancelled: by a NavigationStarting handler, by a newer navigation, or by a download.
+    /// Normal, not something to show the user.
+    Canceled,
+    /// The server couldn't be reached: DNS, connection, timeout, ...
+    Network,
+    /// TLS certificate problem (server or client certificate)
+    Certificate,
+    /// Authentication required, invalid server response, redirect failure, unknown
+    Other,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NavError {
+    pub kind: NavErrorKind,
+    /// COREWEBVIEW2_WEB_ERROR_STATUS without the prefix, e.g. "HOST_NAME_NOT_RESOLVED"
+    pub status: &'static str,
+}
+
+impl NavError {
+    fn from_status(status: wv2::COREWEBVIEW2_WEB_ERROR_STATUS) -> Self {
+        use NavErrorKind::*;
+        let (kind, status) = match status {
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED => (Canceled, "OPERATION_CANCELED"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED => {
+                (Network, "HOST_NAME_NOT_RESOLVED")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT => (Network, "CANNOT_CONNECT"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE => (Network, "SERVER_UNREACHABLE"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT => (Network, "TIMEOUT"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED => (Network, "DISCONNECTED"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET => (Network, "CONNECTION_RESET"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED => (Network, "CONNECTION_ABORTED"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT => {
+                (Certificate, "CERTIFICATE_COMMON_NAME_IS_INCORRECT")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED => {
+                (Certificate, "CERTIFICATE_EXPIRED")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID => {
+                (Certificate, "CERTIFICATE_IS_INVALID")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED => {
+                (Certificate, "CERTIFICATE_REVOKED")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS => {
+                (Certificate, "CLIENT_CERTIFICATE_CONTAINS_ERRORS")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE => {
+                (Other, "ERROR_HTTP_INVALID_SERVER_RESPONSE")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_REDIRECT_FAILED => (Other, "REDIRECT_FAILED"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED => {
+                (Other, "VALID_AUTHENTICATION_CREDENTIALS_REQUIRED")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_VALID_PROXY_AUTHENTICATION_REQUIRED => {
+                (Other, "VALID_PROXY_AUTHENTICATION_REQUIRED")
+            }
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR => (Other, "UNEXPECTED_ERROR"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN => (Other, "UNKNOWN"),
+            _ => (Other, "UNRECOGNIZED"),
+        };
+        Self { kind, status }
+    }
+}
+
+pub struct NavigationCompletedEvent {
+    sender: ICoreWebView2,
+    uri: String,
+    error: Option<NavError>,
+}
+
+impl NavigationCompletedEvent {
+    /// The WebView's Source after the navigation. For a failed navigation this is
+    /// expected to be the URI that failed (WebView2 commits its error page at that URI).
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// None = success
+    pub fn error(&self) -> Option<NavError> {
+        self.error
+    }
+
+    /// Replaces the page with the given HTML (e.g. the app's own error page).
+    pub fn show_html(&self, html: &str) -> windows_core::Result<()> {
+        unsafe { self.sender.NavigateToString(&HSTRING::from(html)) }
+    }
+}
+
+// ============================================================
 // ProcessFailed
 // - passed to the ProcessFailed callback
 // ============================================================
@@ -629,6 +726,39 @@ impl WebViewHost {
         unsafe { self.view.wv.add_WebMessageReceived(&handler, &mut token)? };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WebMessageReceived(token) };
+        });
+        Ok(())
+    }
+
+    /// A top-level navigation finished, successfully or not.
+    pub fn set_on_navigation_completed(
+        &mut self,
+        cb: impl Fn(NavigationCompletedEvent) + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+            let (Some(sender), Some(args)) = (sender, args) else {
+                return Ok(());
+            };
+            let mut ok = Default::default();
+            unsafe { args.IsSuccess(&mut ok)? };
+            let error = if ok.as_bool() {
+                None
+            } else {
+                let mut status = Default::default();
+                unsafe { args.WebErrorStatus(&mut status)? };
+                Some(NavError::from_status(status))
+            };
+            let mut raw = PWSTR::null();
+            unsafe { sender.Source(&mut raw)? };
+            let uri = take_pwstr(raw);
+            cb(NavigationCompletedEvent { sender, uri, error });
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_NavigationCompleted(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_NavigationCompleted(token) };
         });
         Ok(())
     }

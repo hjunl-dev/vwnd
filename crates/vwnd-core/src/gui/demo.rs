@@ -98,3 +98,76 @@ pub const CRASH_HTML: &str = r#"<!doctype html>
   <h2>The page stopped working</h2>
   <p>It crashed again right after reloading, so it was not reloaded automatically.</p>
 </body></html>"#;
+
+/// Shown when a page can't be reached (network or certificate errors).
+/// `uri` comes from the network side, so it is HTML-escaped before it goes into the page.
+pub fn error_page_html(uri: &str, status: &str) -> String {
+    let uri_html = html_escape(uri);
+    let status_html = html_escape(status);
+    // a retry link only for http(s): anything else was never meant to be navigated to again
+    let lower = uri.to_ascii_lowercase();
+    let retry = if lower.starts_with("http://") || lower.starts_with("https://") {
+        format!(r#"<p><a href="{uri_html}">Try again</a></p>"#)
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>Can't reach this page</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ font-family: system-ui, sans-serif; margin: 48px; background: #202020; color: #e6e6e6; }}
+  a {{ color: #8ab4f8; }}
+  code {{ word-break: break-all; }}
+</style></head>
+<body>
+  <h2>Can't reach this page</h2>
+  <p><code>{uri_html}</code></p>
+  <p>Error: <code>{status_html}</code></p>
+  {retry}
+</body></html>"#
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_escape_escapes_markup_and_quotes() {
+        assert_eq!(
+            html_escape(r#"<a href="x">'&'</a>"#),
+            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
+        );
+        assert_eq!(html_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn error_page_escapes_the_uri() {
+        let html = error_page_html("https://x.y/<script>alert(1)</script>", "TIMEOUT");
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn error_page_offers_retry_only_for_http() {
+        assert!(error_page_html("https://x.y/", "TIMEOUT").contains("Try again"));
+        assert!(error_page_html("HTTP://x.y/", "TIMEOUT").contains("Try again"));
+        assert!(!error_page_html("about:blank", "TIMEOUT").contains("Try again"));
+    }
+}
