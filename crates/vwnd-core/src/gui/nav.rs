@@ -69,6 +69,34 @@ pub fn normalize_user_url(input: &str) -> String {
     }
 }
 
+/// Which documents may talk to the host over the WebMessage bridge.
+/// Separate from NavPolicy: a page may be allowed to load in the app without being
+/// allowed to call into it.
+#[derive(Clone, Copy, Debug)]
+pub struct BridgePolicy<'a> {
+    /// https hosts whose pages may message the host (exact host or subdomain).
+    /// Plain http is never trusted.
+    pub trusted_hosts: &'a [&'a str],
+    /// Trust "about:blank": the app's own NavigateToString pages report this source.
+    /// A blank popup a page opens by script (window.open('')) reports it too, so this
+    /// also trusts whatever that page writes into it.
+    pub trust_about_blank: bool,
+}
+
+impl BridgePolicy<'_> {
+    /// `source`: WebMessage::source(), the URI of the document that posted the message
+    pub fn trusts(&self, source: &str) -> bool {
+        let Some((scheme, rest)) = split_scheme(source) else {
+            return false;
+        };
+        match scheme.as_str() {
+            "about" => self.trust_about_blank && rest.eq_ignore_ascii_case("blank"),
+            "https" => url_host(rest).is_some_and(|host| host_matches(&host, self.trusted_hosts)),
+            _ => false,
+        }
+    }
+}
+
 // "HTTPS://x" -> ("https", "//x")
 fn split_scheme(uri: &str) -> Option<(String, &str)> {
     let (scheme, rest) = uri.split_once(':')?;
@@ -227,6 +255,50 @@ mod tests {
         ] {
             assert_eq!(normalize_user_url(url), url, "{url}");
         }
+    }
+
+    const BRIDGE: BridgePolicy<'static> = BridgePolicy {
+        trusted_hosts: &["example.com"],
+        trust_about_blank: true,
+    };
+
+    #[test]
+    fn bridge_trusts_listed_https_hosts_and_subdomains() {
+        for src in [
+            "https://example.com/",
+            "https://app.example.com:8443/x",
+            "HTTPS://EXAMPLE.COM",
+        ] {
+            assert!(BRIDGE.trusts(src), "{src}");
+        }
+    }
+
+    #[test]
+    fn bridge_rejects_other_sources() {
+        for src in [
+            "http://example.com/",
+            "https://example.org/",
+            "https://badexample.com/",
+            "https://user@example.com@evil.com/",
+            "data:text/html,x",
+            "about:srcdoc",
+            "about:blank#x",
+            "file:///C:/x.html",
+            "",
+        ] {
+            assert!(!BRIDGE.trusts(src), "{src}");
+        }
+    }
+
+    #[test]
+    fn bridge_about_blank_follows_the_flag() {
+        assert!(BRIDGE.trusts("about:blank"));
+        assert!(BRIDGE.trusts("ABOUT:BLANK"));
+        let strict = BridgePolicy {
+            trust_about_blank: false,
+            ..BRIDGE
+        };
+        assert!(!strict.trusts("about:blank"));
     }
 
     #[test]

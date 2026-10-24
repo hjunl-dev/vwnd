@@ -17,7 +17,7 @@ use windows_core::w;
 use crate::gui::{
     com::ComApartment,
     mswin::{WindowClass, WindowHandler},
-    nav::{NavDecision, NavPolicy, normalize_user_url},
+    nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
     webview::{
         NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow,
         ProcessFailedEvent, ProcessFailure, WebMessage, WebView, WebViewBackground, WebViewEnv,
@@ -107,6 +107,17 @@ const NAV_POLICY: NavPolicy<'static> = NavPolicy {
     in_app_hosts: None,
     // in_app_hosts: Some(&["example.com", "google.com"]),
     external_schemes: &["mailto", "tel"],
+};
+
+// Who may message the host over the bridge (see gui/nav.rs)
+// - trusted_hosts: https hosts (and subdomains) whose pages may call into the app
+// - trust_about_blank: needed for the built-in pages (NavigateToString reports about:blank);
+//   note that a script-opened blank popup reports it too
+// Messages from anyone else are dropped without a reply.
+const BRIDGE_POLICY: BridgePolicy<'static> = BridgePolicy {
+    trusted_hosts: &[],
+    // trusted_hosts: &["example.com"],
+    trust_about_blank: true,
 };
 
 fn open_external(uri: &str) {
@@ -354,8 +365,15 @@ impl App {
     // Page -> host messages. Demo protocol:
     // - "probe" (string): run demo::PROBE_JS in the sender, reply {"type":"probe","data":<result>}
     // - anything else: echo back as {"type":"echo","data":<message>}
-    // In real use, check msg.source() before trusting the content.
+    // Only sources BRIDGE_POLICY trusts get here; the rest are dropped first.
     fn handle_web_message(msg: WebMessage) {
+        if !BRIDGE_POLICY.trusts(msg.source()) {
+            eprintln!(
+                "[app] web message dropped (untrusted source): {}",
+                msg.source()
+            );
+            return;
+        }
         eprintln!(
             "[app] web message from {}: {}",
             msg.source(),

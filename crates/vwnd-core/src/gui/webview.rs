@@ -4,6 +4,7 @@ use webview2_com::{
     AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
+    Microsoft::Web::WebView2::Win32 as wv2,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_COLOR, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
         COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
@@ -14,9 +15,9 @@ use webview2_com::{
         ICoreWebView2NewWindowRequestedEventArgs, ICoreWebView2Settings3,
         ICoreWebView2WebMessageReceivedEventArgs,
     },
-    Microsoft::Web::WebView2::Win32 as wv2, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler, ProcessFailedEventHandler,
-    WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
+    WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows_core::{Error, HSTRING, Interface, PCWSTR, PWSTR};
@@ -425,16 +426,22 @@ impl NavError {
     fn from_status(status: wv2::COREWEBVIEW2_WEB_ERROR_STATUS) -> Self {
         use NavErrorKind::*;
         let (kind, status) = match status {
-            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED => (Canceled, "OPERATION_CANCELED"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED => {
+                (Canceled, "OPERATION_CANCELED")
+            }
             wv2::COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED => {
                 (Network, "HOST_NAME_NOT_RESOLVED")
             }
             wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT => (Network, "CANNOT_CONNECT"),
-            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE => (Network, "SERVER_UNREACHABLE"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE => {
+                (Network, "SERVER_UNREACHABLE")
+            }
             wv2::COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT => (Network, "TIMEOUT"),
             wv2::COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED => (Network, "DISCONNECTED"),
             wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET => (Network, "CONNECTION_RESET"),
-            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED => (Network, "CONNECTION_ABORTED"),
+            wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED => {
+                (Network, "CONNECTION_ABORTED")
+            }
             wv2::COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT => {
                 (Certificate, "CERTIFICATE_COMMON_NAME_IS_INCORRECT")
             }
