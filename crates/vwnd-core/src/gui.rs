@@ -19,9 +19,9 @@ use crate::gui::{
     mswin::{WindowClass, WindowHandler},
     nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
     webview::{
-        NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow,
-        ProcessFailedEvent, ProcessFailure, WebMessage, WebView, WebViewBackground, WebViewEnv,
-        WebViewHost, WebViewSettings,
+        NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow, PermissionKind,
+        PermissionRequest, ProcessFailedEvent, ProcessFailure, WebMessage, WebView,
+        WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
     },
 };
 
@@ -119,6 +119,12 @@ const BRIDGE_POLICY: BridgePolicy<'static> = BridgePolicy {
     // trusted_hosts: &["example.com"],
     trust_about_blank: true,
 };
+
+// Page permission requests (camera, microphone, location, notifications, clipboard read, ...)
+// - kinds listed here are allowed for pages BRIDGE_POLICY trusts
+// - everything else is denied: no WebView2 prompt, the page just gets "denied"
+const ALLOWED_PERMISSIONS: &[PermissionKind] = &[];
+// const ALLOWED_PERMISSIONS: &[PermissionKind] = &[PermissionKind::ClipboardRead];
 
 fn open_external(uri: &str) {
     if !NAV_POLICY.can_open_externally(uri) {
@@ -279,6 +285,8 @@ impl App {
         host.set_on_process_failed(move |ev| App::handle_process_failed(hwnd, &last_reload, ev))?;
         // set navigation completed callback (error page for unreachable pages)
         host.set_on_navigation_completed(App::handle_navigation_completed)?;
+        // set permission requested callback (deny unless allowed)
+        host.set_on_permission_requested(App::handle_permission_requested)?;
         // inject the bridge (window.vwnd) into every document, before the first navigation
         view.add_script_on_document_created(demo::BRIDGE_JS)?;
 
@@ -301,6 +309,22 @@ impl App {
 
     // Page -> host messages. Demo protocol: echo back as {"type":"echo","data":<message>}.
     // In real use, check msg.source() before trusting the content.
+    // Allow only ALLOWED_PERMISSIONS, and only for pages BRIDGE_POLICY trusts; deny the rest.
+    fn handle_permission_requested(req: PermissionRequest) {
+        let allow = ALLOWED_PERMISSIONS.contains(&req.kind()) && BRIDGE_POLICY.trusts(req.uri());
+        eprintln!(
+            "[app] permission {:?} {} for {} (user initiated: {})",
+            req.kind(),
+            if allow { "allowed" } else { "denied" },
+            req.uri(),
+            req.is_user_initiated()
+        );
+        let result = if allow { req.allow() } else { req.deny() };
+        if let Err(e) = result {
+            eprintln!("[app] failed to answer permission request: {e}");
+        }
+    }
+
     // Top-level navigation results.
     // - network / certificate errors: replace WebView2's error page with the app's own
     // - canceled: normal (NAV_POLICY blocked it, a newer navigation replaced it, a download)

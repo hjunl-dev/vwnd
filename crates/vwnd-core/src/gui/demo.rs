@@ -66,6 +66,12 @@ pub const TEST_HTML: &str = r#"<!doctype html>
   <button onclick="vwnd.post('probe')">ask host to probe this page</button>
   <div id="log"></div>
 
+  <h3>Permissions</h3>
+  <button onclick="ask('geolocation', () => new Promise((ok, err) =>
+    navigator.geolocation.getCurrentPosition(ok, err)))">geolocation</button>
+  <button onclick="ask('camera', () => navigator.mediaDevices.getUserMedia({ video: true }))">camera</button>
+  <button onclick="ask('clipboard read', () => navigator.clipboard.readText())">clipboard read</button>
+
   <h3>Navigation</h3>
   <a href="https://www.google.com/">google.com</a> ·
   <a href="https://example.com/">example.com</a> ·
@@ -78,6 +84,12 @@ pub const TEST_HTML: &str = r#"<!doctype html>
     log('bridge ready');
   } else {
     log('bridge not injected');
+  }
+  // Runs a permission-gated API and logs allowed / the error (missing APIs included)
+  function ask(name, request) {
+    Promise.resolve()
+      .then(request)
+      .then(() => log(name + ': allowed'), (e) => log(name + ': ' + (e.name || e.message || e)));
   }
   // Popup that shows this page, so window.close() can be tested in a script-opened window
   function openSelfTest() {

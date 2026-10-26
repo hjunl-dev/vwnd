@@ -16,8 +16,8 @@ use webview2_com::{
         ICoreWebView2WebMessageReceivedEventArgs,
     },
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    NewWindowRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
-    WindowCloseRequestedEventHandler, take_pwstr,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
 use windows_core::{Error, HSTRING, Interface, PCWSTR, PWSTR};
@@ -500,6 +500,84 @@ impl NavigationCompletedEvent {
 }
 
 // ============================================================
+// PermissionRequested
+// - passed to the PermissionRequested callback (camera, microphone, location, ...)
+// - dropping the request without a decision = WebView2's default (its own prompt)
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionKind {
+    Microphone,
+    Camera,
+    Geolocation,
+    Notifications,
+    OtherSensors,
+    ClipboardRead,
+    MultipleAutomaticDownloads,
+    FileReadWrite,
+    Autoplay,
+    LocalFonts,
+    MidiSystemExclusiveMessages,
+    WindowManagement,
+    /// UNKNOWN_PERMISSION, or a kind newer than these bindings
+    Unknown(i32),
+}
+
+impl PermissionKind {
+    fn from_raw(kind: wv2::COREWEBVIEW2_PERMISSION_KIND) -> Self {
+        match kind {
+            wv2::COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => Self::Microphone,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_CAMERA => Self::Camera,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION => Self::Geolocation,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS => Self::Notifications,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_OTHER_SENSORS => Self::OtherSensors,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ => Self::ClipboardRead,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS => {
+                Self::MultipleAutomaticDownloads
+            }
+            wv2::COREWEBVIEW2_PERMISSION_KIND_FILE_READ_WRITE => Self::FileReadWrite,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_AUTOPLAY => Self::Autoplay,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_LOCAL_FONTS => Self::LocalFonts,
+            wv2::COREWEBVIEW2_PERMISSION_KIND_MIDI_SYSTEM_EXCLUSIVE_MESSAGES => {
+                Self::MidiSystemExclusiveMessages
+            }
+            wv2::COREWEBVIEW2_PERMISSION_KIND_WINDOW_MANAGEMENT => Self::WindowManagement,
+            other => Self::Unknown(other.0),
+        }
+    }
+}
+
+pub struct PermissionRequest {
+    args: wv2::ICoreWebView2PermissionRequestedEventArgs,
+    uri: String,
+    kind: PermissionKind,
+    user_initiated: bool,
+}
+
+impl PermissionRequest {
+    /// URI of the document that asked
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    pub fn kind(&self) -> PermissionKind {
+        self.kind
+    }
+
+    pub fn is_user_initiated(&self) -> bool {
+        self.user_initiated
+    }
+
+    pub fn allow(self) -> windows_core::Result<()> {
+        unsafe { self.args.SetState(wv2::COREWEBVIEW2_PERMISSION_STATE_ALLOW) }
+    }
+
+    pub fn deny(self) -> windows_core::Result<()> {
+        unsafe { self.args.SetState(wv2::COREWEBVIEW2_PERMISSION_STATE_DENY) }
+    }
+}
+
+// ============================================================
 // ProcessFailed
 // - passed to the ProcessFailed callback
 // ============================================================
@@ -766,6 +844,39 @@ impl WebViewHost {
         unsafe { self.view.wv.add_NavigationCompleted(&handler, &mut token)? };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_NavigationCompleted(token) };
+        });
+        Ok(())
+    }
+
+    /// A page asked for a permission (camera, microphone, location, notifications, ...).
+    pub fn set_on_permission_requested(
+        &mut self,
+        cb: impl Fn(PermissionRequest) + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut raw = PWSTR::null();
+            unsafe { args.Uri(&mut raw)? };
+            let uri = take_pwstr(raw);
+            let mut kind = Default::default();
+            unsafe { args.PermissionKind(&mut kind)? };
+            let mut user_initiated = Default::default();
+            unsafe { args.IsUserInitiated(&mut user_initiated)? };
+            cb(PermissionRequest {
+                args,
+                uri,
+                kind: PermissionKind::from_raw(kind),
+                user_initiated: user_initiated.as_bool(),
+            });
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { self.view.wv.add_PermissionRequested(&handler, &mut token)? };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_PermissionRequested(token) };
         });
         Ok(())
     }
