@@ -8,6 +8,7 @@ use std::{
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_F4},
     UI::WindowsAndMessaging::{
         WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_MOVE, WM_SETFOCUS, WM_SIZE,
     },
@@ -19,8 +20,8 @@ use crate::gui::{
     mswin::{WindowClass, WindowHandler},
     nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
     webview::{
-        NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow, PermissionKind,
-        PermissionRequest, ProcessFailedEvent, ProcessFailure, WebMessage, WebView,
+        AcceleratorKey, NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow,
+        PermissionKind, PermissionRequest, ProcessFailedEvent, ProcessFailure, WebMessage, WebView,
         WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
     },
 };
@@ -125,6 +126,11 @@ const BRIDGE_POLICY: BridgePolicy<'static> = BridgePolicy {
 // - everything else is denied: no WebView2 prompt, the page just gets "denied"
 const ALLOWED_PERMISSIONS: &[PermissionKind] = &[];
 // const ALLOWED_PERMISSIONS: &[PermissionKind] = &[PermissionKind::ClipboardRead];
+
+// Keyboard shortcuts that close a popup window (the main window has none)
+// - Ctrl+W / Ctrl+F4: like closing a browser tab
+// - Esc: off by default, since pages use it (closing their dialogs, leaving fullscreen)
+const POPUP_CLOSE_ON_ESC: bool = false;
 
 fn open_external(uri: &str) {
     if !NAV_POLICY.can_open_externally(uri) {
@@ -287,6 +293,16 @@ impl App {
         host.set_on_navigation_completed(App::handle_navigation_completed)?;
         // set permission requested callback (deny unless allowed)
         host.set_on_permission_requested(App::handle_permission_requested)?;
+        // popups only: close shortcuts (see POPUP_CLOSE_ON_ESC)
+        if self.is_popup {
+            host.set_on_accelerator_key(move |key| {
+                if !App::is_popup_close_key(key) {
+                    return;
+                }
+                let _ = key.set_handled();
+                mswin::post_close(hwnd);
+            })?;
+        }
         // inject the bridge (window.vwnd) into every document, before the first navigation
         view.add_script_on_document_created(demo::BRIDGE_JS)?;
 
@@ -309,6 +325,18 @@ impl App {
 
     // Page -> host messages. Demo protocol: echo back as {"type":"echo","data":<message>}.
     // In real use, check msg.source() before trusting the content.
+    fn is_popup_close_key(key: &AcceleratorKey) -> bool {
+        if !key.is_key_down() || key.is_repeat() {
+            return false;
+        }
+        let vk = key.virtual_key();
+        if mswin::is_ctrl_down() {
+            vk == u32::from(b'W') || vk == u32::from(VK_F4.0)
+        } else {
+            POPUP_CLOSE_ON_ESC && vk == u32::from(VK_ESCAPE.0)
+        }
+    }
+
     // Allow only ALLOWED_PERMISSIONS, and only for pages BRIDGE_POLICY trusts; deny the rest.
     fn handle_permission_requested(req: PermissionRequest) {
         let allow = ALLOWED_PERMISSIONS.contains(&req.kind()) && BRIDGE_POLICY.trusts(req.uri());

@@ -14,6 +14,7 @@ use windows::Win32::{
             AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
             GetDpiForWindow, SetProcessDpiAwarenessContext,
         },
+        Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL},
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
@@ -326,6 +327,11 @@ pub fn set_title(hwnd: HWND, title: &str) -> windows_core::Result<()> {
 
 pub fn is_foreground(hwnd: HWND) -> bool {
     unsafe { GetForegroundWindow() == hwnd }
+}
+
+// Ctrl held right now, as of the message being processed (GetKeyState: high bit = down)
+pub fn is_ctrl_down() -> bool {
+    unsafe { GetKeyState(i32::from(VK_CONTROL.0)) < 0 }
 }
 
 // Converts a client (content) size in DIPs to the outer window size in physical pixels

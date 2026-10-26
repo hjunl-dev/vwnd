@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use webview2_com::{
-    AddScriptToExecuteOnDocumentCreatedCompletedHandler,
+    AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32 as wv2,
@@ -667,6 +667,42 @@ impl Drop for PendingNewWindow {
 }
 
 // ============================================================
+// AcceleratorKey
+// - passed to the AcceleratorKeyPressed callback
+// - fires while the WebView has focus (the host window gets no WM_KEYDOWN then) for:
+//   keys pressed with Ctrl or Alt, keys that don't type a character, and Escape
+// ============================================================
+
+pub struct AcceleratorKey {
+    args: wv2::ICoreWebView2AcceleratorKeyPressedEventArgs,
+    key_down: bool,
+    virtual_key: u32,
+    repeat: bool,
+}
+
+impl AcceleratorKey {
+    /// KEY_DOWN only (not key up, not SYSTEM_KEY_DOWN, which is Alt / F10)
+    pub fn is_key_down(&self) -> bool {
+        self.key_down
+    }
+
+    /// Win32 virtual-key code (VK_*; letters and digits are their ASCII uppercase)
+    pub fn virtual_key(&self) -> u32 {
+        self.virtual_key
+    }
+
+    /// Auto-repeat from holding the key down
+    pub fn is_repeat(&self) -> bool {
+        self.repeat
+    }
+
+    /// Stops the key from reaching the page (and WebView2's own shortcuts)
+    pub fn set_handled(&self) -> windows_core::Result<()> {
+        unsafe { self.args.SetHandled(true) }
+    }
+}
+
+// ============================================================
 // WebViewHost
 // - Drop: remove every event registration, then Controller::Close
 //   (guaranteed on every path, including early `?` returns during setup)
@@ -812,6 +848,45 @@ impl WebViewHost {
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WebMessageReceived(token) };
         });
+        Ok(())
+    }
+
+    /// Accelerator keys pressed while the WebView has focus (see AcceleratorKey).
+    pub fn set_on_accelerator_key(
+        &mut self,
+        cb: impl Fn(&AcceleratorKey) + 'static,
+    ) -> windows_core::Result<()> {
+        let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut kind = Default::default();
+            unsafe { args.KeyEventKind(&mut kind)? };
+            let mut virtual_key = 0u32;
+            unsafe { args.VirtualKey(&mut virtual_key)? };
+            let mut status = Default::default();
+            unsafe { args.PhysicalKeyStatus(&mut status)? };
+            let key = AcceleratorKey {
+                args,
+                key_down: kind == wv2::COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+                virtual_key,
+                repeat: status.WasKeyDown.as_bool(),
+            };
+            cb(&key);
+            Ok(())
+        }));
+
+        // a controller event, unlike the others (which are on ICoreWebView2)
+        let mut token = Default::default();
+        unsafe {
+            self.view
+                .ctrl
+                .add_AcceleratorKeyPressed(&handler, &mut token)?
+        };
+        let ctrl = self.view.ctrl.clone();
+        self.event_regs.push(EventReg::new(move || {
+            let _ = unsafe { ctrl.remove_AcceleratorKeyPressed(token) };
+        }));
         Ok(())
     }
 
