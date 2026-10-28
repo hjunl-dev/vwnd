@@ -132,6 +132,17 @@ const ALLOWED_PERMISSIONS: &[PermissionKind] = &[];
 // - Esc: off by default, since pages use it (closing their dialogs, leaving fullscreen)
 const POPUP_CLOSE_ON_ESC: bool = false;
 
+// The main window couldn't get a WebView (sync: window creation failed; async: environment
+// or controller creation failed). The usual cause is a missing WebView2 Runtime.
+fn report_startup_failure(owner: Option<HWND>, e: &windows_core::Error) {
+    eprintln!("[app] startup failed: {e}");
+    let text = format!(
+        "The web view could not be started.\n\n{e}\n\n\
+         Make sure the Microsoft Edge WebView2 Runtime is installed."
+    );
+    mswin::show_error(owner, "vwnd", &text);
+}
+
 fn open_external(uri: &str) {
     if !NAV_POLICY.can_open_externally(uri) {
         eprintln!("[app] not opening externally: {uri}");
@@ -183,6 +194,8 @@ pub struct App {
     shared: Rc<Shared>,
     is_popup: bool,
     hwnd: Cell<HWND>,
+    // counted in Shared.open_windows: only once WM_CREATE succeeded
+    counted: Cell<bool>,
     host: RefCell<Option<WebViewHost>>,
     initial: RefCell<Option<Initial>>,
 }
@@ -209,7 +222,11 @@ impl App {
             Initial::Start(start_page_from_args()),
         ));
         let (w, h) = mswin::outer_size_for_client_dip(None, MAIN_SIZE.0, MAIN_SIZE.1)?;
-        let hwnd = shared.wnd_class.create_wnd("vwnd_wnd", None, w, h, main)?;
+        // a synchronous failure (e.g. no WebView2 runtime) fails WM_CREATE -> no window
+        let hwnd = shared
+            .wnd_class
+            .create_wnd("vwnd_wnd", None, w, h, main)
+            .inspect_err(|e| report_startup_failure(None, e))?;
         mswin::show(hwnd);
 
         let _exit_code = mswin::run_message_loop()?;
@@ -221,6 +238,7 @@ impl App {
             shared,
             is_popup: matches!(initial, Initial::NewWindow(_)),
             hwnd: Cell::new(HWND::default()),
+            counted: Cell::new(false),
             host: RefCell::new(None),
             initial: RefCell::new(Some(initial)),
         }
@@ -535,9 +553,13 @@ impl App {
         // dropping a PendingNewWindow cancels the request (window.open returns null)
         let initial = self.initial.borrow_mut().take();
         drop(initial);
-        if self.is_popup {
-            mswin::post_close(self.hwnd.get());
+        let hwnd = self.hwnd.get();
+        if !self.is_popup {
+            // main window: an empty window is no use -> tell the user, then close (and quit).
+            // Box first: closing first would quit, and WM_QUIT ends the box's own loop at once.
+            report_startup_failure(Some(hwnd), &e);
         }
+        mswin::post_close(hwnd);
     }
 
     // Clones the view out so no RefCell borrow is held while calling into WebView2.
@@ -561,6 +583,28 @@ impl App {
         }
     }
 
+    // Popups (and any later window) reuse the shared environment; the first window creates
+    // it, then its controller. Errors here are synchronous; async ones go to on_setup_failed.
+    fn start_webview(self: &Rc<Self>) -> windows_core::Result<()> {
+        let env = self.shared.env.borrow().clone();
+        if let Some(env) = env {
+            return self.create_host(&env);
+        }
+        let weak = Rc::downgrade(self);
+        WebViewEnv::create(&App::default_user_data_dir(), move |res| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let result = res.and_then(|env| {
+                *this.shared.env.borrow_mut() = Some(env.clone());
+                this.create_host(&env)
+            });
+            if let Err(e) = result {
+                this.on_setup_failed(e);
+            }
+        })
+    }
+
     fn on_destroy(&self) {
         // cancel a popup request that never completed (window closed during setup)
         let initial = self.initial.borrow_mut().take();
@@ -568,6 +612,9 @@ impl App {
         self.close_webview();
 
         // quit when the last window (main or popup) is gone
+        if !self.counted.replace(false) {
+            return;
+        }
         let remaining = self.shared.open_windows.get().saturating_sub(1);
         self.shared.open_windows.set(remaining);
         if remaining == 0 {
@@ -586,31 +633,14 @@ impl App {
 impl WindowHandler for App {
     fn on_create(self: &Rc<Self>, hwnd: HWND) -> windows_core::Result<()> {
         self.hwnd.set(hwnd);
-        // counted first, so WM_DESTROY (sent even when WM_CREATE fails) stays balanced
+        self.start_webview()?;
+        // Counted only on success. A failed WM_CREATE still gets WM_DESTROY, and counting it
+        // would post WM_QUIT there, which would close the startup error box at once.
+        self.counted.set(true);
         self.shared
             .open_windows
             .set(self.shared.open_windows.get() + 1);
-
-        // popups (and any later window): reuse the shared environment
-        let env = self.shared.env.borrow().clone();
-        if let Some(env) = env {
-            return self.create_host(&env);
-        }
-
-        // first window: create the shared environment, then the controller
-        let weak = Rc::downgrade(self);
-        WebViewEnv::create(&App::default_user_data_dir(), move |res| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let result = res.and_then(|env| {
-                *this.shared.env.borrow_mut() = Some(env.clone());
-                this.create_host(&env)
-            });
-            if let Err(e) = result {
-                this.on_setup_failed(e);
-            }
-        })
+        Ok(())
     }
 
     fn on_message(

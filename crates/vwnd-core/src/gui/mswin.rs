@@ -19,11 +19,12 @@ use windows::Win32::{
         WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
             DispatchMessageW, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
-            GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
-            PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNORMAL,
-            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-            ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
-            WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+            GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
+            PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW,
+            SW_SHOW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+            SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
+            WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
+            WS_OVERLAPPEDWINDOW,
         },
     },
 };
@@ -400,6 +401,19 @@ pub fn apply_dpi_changed(hwnd: HWND, lparam: LPARAM) -> windows_core::Result<()>
             r.bottom - r.top,
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
+    }
+}
+
+// Modal error box. Runs its own message loop until dismissed, so the caller's window
+// keeps painting; `owner` (if any) is disabled meanwhile.
+pub fn show_error(owner: Option<HWND>, title: &str, text: &str) {
+    unsafe {
+        MessageBoxW(
+            owner,
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
 
