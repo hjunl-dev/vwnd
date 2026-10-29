@@ -22,7 +22,7 @@ use crate::gui::{
     webview::{
         AcceleratorKey, NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow,
         PermissionKind, PermissionRequest, ProcessFailedEvent, ProcessFailure, WebMessage, WebView,
-        WebViewBackground, WebViewEnv, WebViewHost, WebViewSettings,
+        WebViewBackground, WebViewEnv, WebViewEnvOptions, WebViewHost, WebViewSettings,
     },
 };
 
@@ -151,6 +151,16 @@ fn open_external(uri: &str) {
     eprintln!("[app] opening in system browser: {uri}");
     if let Err(e) = mswin::open_external(uri) {
         eprintln!("[app] failed to open externally: {e}");
+    }
+}
+
+// Environment options: fixed for the app's lifetime (all windows share one environment)
+// - language: WebView2's UI and the pages' default language; None = the OS language
+const ENV_LANGUAGE: Option<&str> = Some("ko-KR");
+
+fn env_options() -> WebViewEnvOptions {
+    WebViewEnvOptions {
+        language: ENV_LANGUAGE.map(str::to_owned),
     }
 }
 
@@ -591,7 +601,7 @@ impl App {
             return self.create_host(&env);
         }
         let weak = Rc::downgrade(self);
-        WebViewEnv::create(&App::default_user_data_dir(), move |res| {
+        WebViewEnv::create(&App::default_user_data_dir(), &env_options(), move |res| {
             let Some(this) = weak.upgrade() else {
                 return;
             };

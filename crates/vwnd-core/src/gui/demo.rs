@@ -32,6 +32,7 @@ pub const PROBE_JS: &str = r#"({
   url: location.href,
   viewport: [innerWidth, innerHeight],
   devicePixelRatio,
+  language: navigator.language,
 })"#;
 
 /// Dark, matching BACKGROUND_RGB in gui.rs, so loading it causes no color switch.

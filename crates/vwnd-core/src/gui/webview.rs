@@ -2,8 +2,9 @@ use std::path::Path;
 
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
+    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler,
+    ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32 as wv2,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_COLOR, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
@@ -30,6 +31,16 @@ use crate::gui::com::EventReg;
 // - popups set via SetNewWindow must come from the same environment
 // ============================================================
 
+/// Options fixed for the environment's lifetime (shared by every WebView in the app).
+/// Another process already using the same user data folder with different options makes
+/// environment creation fail.
+#[derive(Clone, Debug, Default)]
+pub struct WebViewEnvOptions {
+    /// Language for WebView2's own UI (context menus, error pages) and the page's default
+    /// language (Accept-Language, navigator.language), e.g. "ko-KR". None = the OS language.
+    pub language: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct WebViewEnv(ICoreWebView2Environment);
 
@@ -37,10 +48,19 @@ impl WebViewEnv {
     // CreateCoreWebView2EnvironmentWithOptions
     pub fn create(
         udf_path: &Path,
+        options: &WebViewEnvOptions,
         on_create: impl FnOnce(windows_core::Result<WebViewEnv>) + 'static,
     ) -> windows_core::Result<()> {
         let mut on_create = Some(on_create);
         let udf_path = HSTRING::from(&*udf_path.to_string_lossy());
+
+        // webview2-com's COM implementation of ICoreWebView2EnvironmentOptions; its defaults
+        // match passing no options (incl. the SDK's target compatible runtime version)
+        let env_options = CoreWebView2EnvironmentOptions::default();
+        if let Some(language) = &options.language {
+            unsafe { env_options.set_language(language.clone()) };
+        }
+        let env_options: wv2::ICoreWebView2EnvironmentOptions = env_options.into();
 
         let handler =
             CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(move |res, env| {
@@ -53,7 +73,12 @@ impl WebViewEnv {
                 Ok(())
             }));
         unsafe {
-            CreateCoreWebView2EnvironmentWithOptions(PCWSTR::null(), &udf_path, None, &handler)
+            CreateCoreWebView2EnvironmentWithOptions(
+                PCWSTR::null(),
+                &udf_path,
+                &env_options,
+                &handler,
+            )
         }
     }
 
