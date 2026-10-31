@@ -321,6 +321,11 @@ impl App {
         host.set_on_navigation_completed(App::handle_navigation_completed)?;
         // set permission requested callback (deny unless allowed)
         host.set_on_permission_requested(App::handle_permission_requested)?;
+        // HTML fullscreen: the window covers its monitor while the page is fullscreen
+        let windowed = Cell::new(None);
+        host.set_on_fullscreen_changed(move |fullscreen| {
+            App::handle_fullscreen_changed(hwnd, &windowed, fullscreen)
+        })?;
         // popups only: close shortcuts (see POPUP_CLOSE_ON_ESC)
         if self.is_popup {
             host.set_on_accelerator_key(move |key| {
@@ -353,6 +358,27 @@ impl App {
 
     // Page -> host messages. Demo protocol: echo back as {"type":"echo","data":<message>}.
     // In real use, check msg.source() before trusting the content.
+    // `windowed`: the frame/placement to restore; Some while this window is fullscreen
+    fn handle_fullscreen_changed(
+        hwnd: HWND,
+        windowed: &Cell<Option<mswin::WindowedState>>,
+        fullscreen: bool,
+    ) {
+        let result = match (fullscreen, windowed.take()) {
+            (true, None) => mswin::enter_fullscreen(hwnd).map(|state| windowed.set(Some(state))),
+            // already fullscreen: keep the original windowed state
+            (true, Some(state)) => {
+                windowed.set(Some(state));
+                Ok(())
+            }
+            (false, Some(state)) => mswin::exit_fullscreen(hwnd, &state),
+            (false, None) => Ok(()),
+        };
+        if let Err(e) = result {
+            eprintln!("[app] failed to switch fullscreen ({fullscreen}): {e}");
+        }
+    }
+
     fn is_popup_close_key(key: &AcceleratorKey) -> bool {
         if !key.is_key_down() || key.is_repeat() {
             return false;

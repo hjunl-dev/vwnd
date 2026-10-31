@@ -73,6 +73,10 @@ pub const TEST_HTML: &str = r#"<!doctype html>
   <button onclick="ask('camera', () => navigator.mediaDevices.getUserMedia({ video: true }))">camera</button>
   <button onclick="ask('clipboard read', () => navigator.clipboard.readText())">clipboard read</button>
 
+  <h3>Fullscreen</h3>
+  <button onclick="document.documentElement.requestFullscreen()
+    .then(() => log('fullscreen: on (Esc to leave)'), (e) => log('fullscreen: ' + e.name))">fullscreen</button>
+
   <h3>Navigation</h3>
   <a href="https://www.google.com/">google.com</a> ·
   <a href="https://example.com/">example.com</a> ·

@@ -2,9 +2,9 @@ use std::path::Path;
 
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
-    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler,
-    ExecuteScriptCompletedHandler,
+    ContainsFullScreenElementChangedEventHandler, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32 as wv2,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_COLOR, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
@@ -872,6 +872,35 @@ impl WebViewHost {
         unsafe { self.view.wv.add_WebMessageReceived(&handler, &mut token)? };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WebMessageReceived(token) };
+        });
+        Ok(())
+    }
+
+    /// The page entered (true) or left (false) HTML fullscreen: element.requestFullscreen(),
+    /// a video player's fullscreen button. WebView2 only reports it; the host resizes.
+    pub fn set_on_fullscreen_changed(
+        &mut self,
+        cb: impl Fn(bool) + 'static,
+    ) -> windows_core::Result<()> {
+        let handler =
+            ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _args| {
+                let Some(sender) = sender else {
+                    return Ok(());
+                };
+                let mut fullscreen = Default::default();
+                unsafe { sender.ContainsFullScreenElement(&mut fullscreen)? };
+                cb(fullscreen.as_bool());
+                Ok(())
+            }));
+
+        let mut token = Default::default();
+        unsafe {
+            self.view
+                .wv
+                .add_ContainsFullScreenElementChanged(&handler, &mut token)?
+        };
+        self.track(move |wv| {
+            let _ = unsafe { wv.remove_ContainsFullScreenElementChanged(token) };
         });
         Ok(())
     }

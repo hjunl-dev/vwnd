@@ -5,8 +5,9 @@ use windows::Win32::{
         COLORREF, E_FAIL, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
     },
     Graphics::Gdi::{
-        COLOR_WINDOW, CreateSolidBrush, DeleteObject, FillRect, HBRUSH, HDC, MONITOR_DEFAULTTONULL,
-        MonitorFromPoint,
+        COLOR_WINDOW, CreateSolidBrush, DeleteObject, FillRect, GetMonitorInfoW, HBRUSH, HDC,
+        MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint,
+        MonitorFromWindow,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -18,12 +19,14 @@ use windows::Win32::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-            DispatchMessageW, GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW,
-            GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MB_ICONERROR, MB_OK, MSG, MessageBoxW,
-            PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostMessageW, PostQuitMessage, RegisterClassExW,
-            SW_SHOW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-            SetWindowTextW, ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE,
-            WINDOW_STYLE, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
+            DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetForegroundWindow,
+            GetMessageW, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, IDC_ARROW, LoadCursorW,
+            MB_ICONERROR, MB_OK, MSG, MessageBoxW, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+            PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNORMAL,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+            SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, SetWindowTextW,
+            ShowWindow, TranslateMessage, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
+            WINDOWPLACEMENT, WM_CLOSE, WM_CREATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSEXW,
             WS_OVERLAPPEDWINDOW,
         },
     },
@@ -414,6 +417,71 @@ pub fn show_error(owner: Option<HWND>, title: &str, text: &str) {
             &HSTRING::from(title),
             MB_OK | MB_ICONERROR,
         );
+    }
+}
+
+// ============================================================
+// fullscreen
+// - borderless fullscreen: drop the WS_OVERLAPPEDWINDOW frame and cover the monitor
+// - the resulting WM_SIZE resizes the content (e.g. WebView bounds)
+// ============================================================
+
+/// What exit_fullscreen needs to put the window back as it was
+#[derive(Clone, Copy)]
+pub struct WindowedState {
+    style: isize,
+    placement: WINDOWPLACEMENT,
+}
+
+pub fn enter_fullscreen(hwnd: HWND) -> windows_core::Result<WindowedState> {
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetWindowPlacement(hwnd, &mut placement)? };
+
+    // the monitor the window is (mostly) on
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return Err(E_FAIL.into());
+    }
+    let r = info.rcMonitor;
+
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_OVERLAPPEDWINDOW.0 as isize));
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+        )?;
+    }
+    Ok(WindowedState { style, placement })
+}
+
+pub fn exit_fullscreen(hwnd: HWND, windowed: &WindowedState) -> windows_core::Result<()> {
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_STYLE, windowed.style);
+        // placement restores position, size and the maximized / normal state
+        SetWindowPlacement(hwnd, &windowed.placement)?;
+        // apply the frame change
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+        )
     }
 }
 
