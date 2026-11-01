@@ -97,6 +97,24 @@ impl BridgePolicy<'_> {
     }
 }
 
+/// Path part of an `https://<host>/...` URI, for serving that host from the app:
+/// "https://Vwnd.example/a/b?x#y" with host "vwnd.example" -> "/a/b" ("" -> "/").
+/// None for another scheme or host; a port or userinfo also means "not ours".
+pub fn virtual_path(uri: &str, host: &str) -> Option<String> {
+    let (scheme, rest) = split_scheme(uri)?;
+    if scheme != "https" {
+        return None;
+    }
+    let rest = rest.strip_prefix("//")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    if !authority.eq_ignore_ascii_case(host) {
+        return None;
+    }
+    let path = tail.split(['?', '#']).next().unwrap_or("");
+    Some(if path.is_empty() { "/" } else { path }.to_owned())
+}
+
 // "HTTPS://x" -> ("https", "//x")
 fn split_scheme(uri: &str) -> Option<(String, &str)> {
     let (scheme, rest) = uri.split_once(':')?;
@@ -299,6 +317,47 @@ mod tests {
             ..BRIDGE
         };
         assert!(!strict.trusts("about:blank"));
+    }
+
+    #[test]
+    fn virtual_path_extracts_the_path_for_our_host() {
+        let host = "vwnd.example";
+        assert_eq!(
+            virtual_path("https://vwnd.example/", host).as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            virtual_path("https://vwnd.example", host).as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            virtual_path("HTTPS://VWND.example/a/b.html", host).as_deref(),
+            Some("/a/b.html")
+        );
+        assert_eq!(
+            virtual_path("https://vwnd.example/x?q=1#f", host).as_deref(),
+            Some("/x")
+        );
+        assert_eq!(
+            virtual_path("https://vwnd.example?q", host).as_deref(),
+            Some("/")
+        );
+    }
+
+    #[test]
+    fn virtual_path_ignores_other_hosts_and_schemes() {
+        let host = "vwnd.example";
+        for uri in [
+            "http://vwnd.example/",
+            "https://evil.example/",
+            "https://vwnd.example.evil.com/",
+            "https://sub.vwnd.example/",
+            "https://vwnd.example:8443/",
+            "https://user@vwnd.example/",
+            "about:blank",
+        ] {
+            assert_eq!(virtual_path(uri, host), None, "{uri}");
+        }
     }
 
     #[test]

@@ -18,12 +18,16 @@ use webview2_com::{
     },
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    WebMessageReceivedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
+    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
+    WindowCloseRequestedEventHandler, take_pwstr,
 };
-use windows::Win32::Foundation::{E_POINTER, HWND, RECT};
-use windows_core::{Error, HSTRING, Interface, PCWSTR, PWSTR};
+use windows::Win32::{
+    Foundation::{E_POINTER, HWND, RECT},
+    UI::Shell::SHCreateMemStream,
+};
+use windows_core::{Error, HSTRING, Interface, PCWSTR, PWSTR, w};
 
-use crate::gui::com::EventReg;
+use crate::gui::{com::EventReg, nav::virtual_path};
 
 // ============================================================
 // WebViewEnv
@@ -138,6 +142,18 @@ pub enum WebViewBackground {
 }
 
 // ============================================================
+// EmbeddedResource
+// - a response served from memory by WebViewHost::serve_virtual_host
+// ============================================================
+
+#[derive(Clone, Copy, Debug)]
+pub struct EmbeddedResource {
+    /// Content-Type, e.g. "text/html; charset=utf-8"
+    pub mime: &'static str,
+    pub body: &'static [u8],
+}
+
+// ============================================================
 // WebView
 // ============================================================
 
@@ -187,6 +203,8 @@ impl WebView {
     }
 
     /// Loads the given HTML as the document (origin is about:blank-like; max ~2 MB).
+    /// Built-in pages that use the bridge are served by `serve_virtual_host` instead.
+    #[allow(dead_code)]
     pub fn navigate_to_string(&self, html: &str) -> windows_core::Result<()> {
         unsafe { self.wv.NavigateToString(&HSTRING::from(html)) }
     }
@@ -872,6 +890,68 @@ impl WebViewHost {
         unsafe { self.view.wv.add_WebMessageReceived(&handler, &mut token)? };
         self.track(move |wv| {
             let _ = unsafe { wv.remove_WebMessageReceived(token) };
+        });
+        Ok(())
+    }
+
+    /// Serves `https://<host>/...` from the app instead of the network (WebResourceRequested).
+    /// `resolve(path)` gets "/", "/test.html", ... (no query) and returns the resource,
+    /// or None for a 404. Register before the first navigation to that host.
+    pub fn serve_virtual_host(
+        &mut self,
+        host: &str,
+        resolve: impl Fn(&str) -> Option<EmbeddedResource> + 'static,
+    ) -> windows_core::Result<()> {
+        // responses are created by the environment this WebView belongs to
+        let env = unsafe { self.view.wv.cast::<wv2::ICoreWebView2_2>()?.Environment()? };
+        let host = host.to_owned();
+        let filter = HSTRING::from(format!("https://{host}/*"));
+        unsafe {
+            self.view.wv.AddWebResourceRequestedFilter(
+                &filter,
+                wv2::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            )?
+        };
+
+        let handler = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut raw = PWSTR::null();
+            unsafe { args.Request()?.Uri(&mut raw)? };
+            let uri = take_pwstr(raw);
+            // the filter is a wildcard; check the host exactly (no port, no userinfo)
+            let Some(path) = virtual_path(&uri, &host) else {
+                return Ok(());
+            };
+            let response = match resolve(&path) {
+                Some(res) => {
+                    let body = unsafe { SHCreateMemStream(Some(res.body)) };
+                    let headers = HSTRING::from(format!("Content-Type: {}", res.mime));
+                    unsafe {
+                        env.CreateWebResourceResponse(body.as_ref(), 200, w!("OK"), &headers)?
+                    }
+                }
+                None => unsafe {
+                    env.CreateWebResourceResponse(None, 404, w!("Not Found"), w!(""))?
+                },
+            };
+            unsafe { args.SetResponse(&response)? };
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe {
+            self.view
+                .wv
+                .add_WebResourceRequested(&handler, &mut token)?
+        };
+        self.track(move |wv| unsafe {
+            let _ = wv.remove_WebResourceRequested(token);
+            let _ = wv.RemoveWebResourceRequestedFilter(
+                &filter,
+                wv2::COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            );
         });
         Ok(())
     }

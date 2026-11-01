@@ -20,9 +20,10 @@ use crate::gui::{
     mswin::{WindowClass, WindowHandler},
     nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
     webview::{
-        AcceleratorKey, NavErrorKind, NavigationCompletedEvent, NewWindowRequest, PendingNewWindow,
-        PermissionKind, PermissionRequest, ProcessFailedEvent, ProcessFailure, WebMessage, WebView,
-        WebViewBackground, WebViewEnv, WebViewEnvOptions, WebViewHost, WebViewSettings,
+        AcceleratorKey, EmbeddedResource, NavErrorKind, NavigationCompletedEvent, NewWindowRequest,
+        PendingNewWindow, PermissionKind, PermissionRequest, ProcessFailedEvent, ProcessFailure,
+        WebMessage, WebView, WebViewBackground, WebViewEnv, WebViewEnvOptions, WebViewHost,
+        WebViewSettings,
     },
 };
 
@@ -100,24 +101,40 @@ const NEW_WINDOW_POLICY: NewWindowPolicy = NewWindowPolicy::OwnWindow;
 // - applied to top-level navigations (NavigationStarting) and new-window requests
 // ============================================================
 
+// Built-in pages are served from https://APP_HOST/ (from memory, see app_resource) instead of
+// NavigateToString's about:blank, so they have a real origin that BRIDGE_POLICY can name.
+// ".example" is reserved for documentation (RFC 2606): it is never a real site.
+const APP_HOST: &str = "vwnd.example";
+
+fn app_resource(path: &str) -> Option<EmbeddedResource> {
+    let html = |page: &'static str| EmbeddedResource {
+        mime: "text/html; charset=utf-8",
+        body: page.as_bytes(),
+    };
+    match path {
+        "/" | "/test.html" => Some(html(demo::TEST_HTML)),
+        _ => None,
+    }
+}
+
 // Which navigations stay in the app (see gui/nav.rs for the rules)
 // - in_app_hosts: None = every http(s) host stays in the app;
 //   Some(hosts) = those hosts and their subdomains stay, others open in the system browser
 // - external_schemes: non-http(s) schemes handed to the system (others are blocked)
 const NAV_POLICY: NavPolicy<'static> = NavPolicy {
     in_app_hosts: None,
-    // in_app_hosts: Some(&["example.com", "google.com"]),
+    // in_app_hosts: Some(&[APP_HOST, "example.com", "google.com"]),
     external_schemes: &["mailto", "tel"],
 };
 
 // Who may message the host over the bridge (see gui/nav.rs)
 // - trusted_hosts: https hosts (and subdomains) whose pages may call into the app
-// - trust_about_blank: needed for the built-in pages (NavigateToString reports about:blank);
+// - trust_about_blank: NavigateToString pages report about:blank;
 //   note that a script-opened blank popup reports it too
 // Messages from anyone else are dropped without a reply.
 const BRIDGE_POLICY: BridgePolicy<'static> = BridgePolicy {
-    trusted_hosts: &[],
-    // trusted_hosts: &["example.com"],
+    trusted_hosts: &[APP_HOST],
+    // trusted_hosts: &[APP_HOST, "example.com"],
     trust_about_blank: true,
 };
 
@@ -338,6 +355,8 @@ impl App {
         }
         // inject the bridge (window.vwnd) into every document, before the first navigation
         view.add_script_on_document_created(demo::BRIDGE_JS)?;
+        // built-in pages at https://APP_HOST/ (popups too: they may open those pages)
+        host.serve_virtual_host(APP_HOST, app_resource)?;
 
         *self.host.borrow_mut() = Some(host);
 
@@ -350,7 +369,9 @@ impl App {
         let initial = self.initial.borrow_mut().take();
         match initial {
             Some(Initial::Start(StartPage::Url(url))) => view.navigate(&url),
-            Some(Initial::Start(StartPage::TestPage)) => view.navigate_to_string(demo::TEST_HTML),
+            Some(Initial::Start(StartPage::TestPage)) => {
+                view.navigate(&format!("https://{APP_HOST}/"))
+            }
             Some(Initial::NewWindow(pending)) => pending.complete(&view),
             None => Ok(()),
         }
