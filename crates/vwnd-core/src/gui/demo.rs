@@ -96,7 +96,8 @@ pub const TEST_HTML: &str = r#"<!doctype html>
       .then(request)
       .then(() => log(name + ': allowed'), (e) => log(name + ': ' + (e.name || e.message || e)));
   }
-  // Popup that shows this page, so window.close() can be tested in a script-opened window
+  // Popup that shows this page, so window.close() can be tested in a script-opened window.
+  // Its document is about:blank (written by script), so the host ignores its bridge messages.
   function openSelfTest() {
     const w = window.open('', 'selftest', 'width=640,height=480');
     if (w) { w.document.write(document.documentElement.outerHTML); w.document.close(); }

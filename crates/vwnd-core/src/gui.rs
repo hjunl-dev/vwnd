@@ -129,13 +129,13 @@ const NAV_POLICY: NavPolicy<'static> = NavPolicy {
 
 // Who may message the host over the bridge (see gui/nav.rs)
 // - trusted_hosts: https hosts (and subdomains) whose pages may call into the app
-// - trust_about_blank: NavigateToString pages report about:blank;
-//   note that a script-opened blank popup reports it too
+// - trust_about_blank: off. Built-in pages that use the bridge come from APP_HOST, and
+//   about:blank is also what a blank popup reports when any page opens and fills it by script.
 // Messages from anyone else are dropped without a reply.
 const BRIDGE_POLICY: BridgePolicy<'static> = BridgePolicy {
     trusted_hosts: &[APP_HOST],
     // trusted_hosts: &[APP_HOST, "example.com"],
-    trust_about_blank: true,
+    trust_about_blank: false,
 };
 
 // Page permission requests (camera, microphone, location, notifications, clipboard read, ...)
