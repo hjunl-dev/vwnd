@@ -17,6 +17,7 @@ use windows_core::w;
 
 use crate::gui::{
     com::ComApartment,
+    log::{log_debug, log_error, log_info, log_warn},
     mswin::{WindowClass, WindowHandler},
     nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
     webview::{
@@ -29,6 +30,7 @@ use crate::gui::{
 
 mod com;
 mod demo;
+mod log;
 mod mswin;
 mod nav;
 mod webview;
@@ -152,7 +154,7 @@ const POPUP_CLOSE_ON_ESC: bool = false;
 // The main window couldn't get a WebView (sync: window creation failed; async: environment
 // or controller creation failed). The usual cause is a missing WebView2 Runtime.
 fn report_startup_failure(owner: Option<HWND>, e: &windows_core::Error) {
-    eprintln!("[app] startup failed: {e}");
+    log_error!("app", "startup failed: {e}");
     let text = format!(
         "The web view could not be started.\n\n{e}\n\n\
          Make sure the Microsoft Edge WebView2 Runtime is installed."
@@ -162,12 +164,12 @@ fn report_startup_failure(owner: Option<HWND>, e: &windows_core::Error) {
 
 fn open_external(uri: &str) {
     if !NAV_POLICY.can_open_externally(uri) {
-        eprintln!("[app] not opening externally: {uri}");
+        log_warn!("app", "not opening externally: {uri}");
         return;
     }
-    eprintln!("[app] opening in system browser: {uri}");
+    log_info!("app", "opening in system browser: {uri}");
     if let Err(e) = mswin::open_external(uri) {
-        eprintln!("[app] failed to open externally: {e}");
+        log_error!("app", "failed to open externally: {e}");
     }
 }
 
@@ -232,7 +234,7 @@ impl App {
         // must run before any window is created
         // - not fatal: fails with E_ACCESSDENIED when already set (e.g. by the manifest)
         if let Err(e) = mswin::init_dpi_awareness() {
-            eprintln!("[app] dpi awareness not applied: {e}");
+            log_warn!("app", "dpi awareness not applied: {e}");
         }
 
         // declared before Shared -> dropped after every COM object below
@@ -305,7 +307,7 @@ impl App {
                 false
             }
             NavDecision::Block => {
-                eprintln!("[app] navigation blocked: {uri}");
+                log_warn!("app", "navigation blocked: {uri}");
                 false
             }
         })?;
@@ -321,7 +323,7 @@ impl App {
                 return;
             };
             if let Err(e) = App::handle_new_window(&shared, hwnd, req) {
-                eprintln!("[app] failed to handle new window request: {e}");
+                log_error!("app", "failed to handle new window request: {e}");
             }
         })?;
         // set window close requested callback
@@ -396,7 +398,7 @@ impl App {
             (false, None) => Ok(()),
         };
         if let Err(e) = result {
-            eprintln!("[app] failed to switch fullscreen ({fullscreen}): {e}");
+            log_error!("app", "failed to switch fullscreen ({fullscreen}): {e}");
         }
     }
 
@@ -415,8 +417,9 @@ impl App {
     // Allow only ALLOWED_PERMISSIONS, and only for pages BRIDGE_POLICY trusts; deny the rest.
     fn handle_permission_requested(req: PermissionRequest) {
         let allow = ALLOWED_PERMISSIONS.contains(&req.kind()) && BRIDGE_POLICY.trusts(req.uri());
-        eprintln!(
-            "[app] permission {:?} {} for {} (user initiated: {})",
+        log_info!(
+            "app",
+            "permission {:?} {} for {} (user initiated: {})",
             req.kind(),
             if allow { "allowed" } else { "denied" },
             req.uri(),
@@ -424,7 +427,7 @@ impl App {
         );
         let result = if allow { req.allow() } else { req.deny() };
         if let Err(e) = result {
-            eprintln!("[app] failed to answer permission request: {e}");
+            log_error!("app", "failed to answer permission request: {e}");
         }
     }
 
@@ -439,8 +442,9 @@ impl App {
         if err.kind == NavErrorKind::Canceled {
             return;
         }
-        eprintln!(
-            "[app] navigation failed ({:?}, {}): {}",
+        log_warn!(
+            "app",
+            "navigation failed ({:?}, {}): {}",
             err.kind,
             err.status,
             ev.uri()
@@ -449,7 +453,7 @@ impl App {
             return;
         }
         if let Err(e) = ev.show_html(&demo::error_page_html(ev.uri(), err.status)) {
-            eprintln!("[app] failed to show error page: {e}");
+            log_error!("app", "failed to show error page: {e}");
         }
     }
 
@@ -464,7 +468,7 @@ impl App {
         last_reload: &Cell<Option<Instant>>,
         ev: ProcessFailedEvent,
     ) {
-        eprintln!("[app] webview process failed: {:?}", ev.kind());
+        log_error!("app", "webview process failed: {:?}", ev.kind());
         let result = match ev.kind() {
             ProcessFailure::BrowserExited => {
                 mswin::post_close(hwnd);
@@ -485,7 +489,7 @@ impl App {
             ProcessFailure::Other(_) => Ok(()),
         };
         if let Err(e) = result {
-            eprintln!("[app] failed to recover from process failure: {e}");
+            log_error!("app", "failed to recover from process failure: {e}");
         }
     }
 
@@ -495,14 +499,16 @@ impl App {
     // Only sources BRIDGE_POLICY trusts get here; the rest are dropped first.
     fn handle_web_message(msg: WebMessage) {
         if !BRIDGE_POLICY.trusts(msg.source()) {
-            eprintln!(
-                "[app] web message dropped (untrusted source): {}",
+            log_warn!(
+                "app",
+                "web message dropped (untrusted source): {}",
                 msg.source()
             );
             return;
         }
-        eprintln!(
-            "[app] web message from {}: {}",
+        log_debug!(
+            "app",
+            "web message from {}: {}",
             msg.source(),
             msg.text().unwrap_or(msg.json())
         );
@@ -513,7 +519,7 @@ impl App {
             msg.reply_json(&format!(r#"{{"type":"echo","data":{}}}"#, msg.json()))
         };
         if let Err(e) = result {
-            eprintln!("[app] failed to handle web message: {e}");
+            log_error!("app", "failed to handle web message: {e}");
         }
     }
 
@@ -525,12 +531,12 @@ impl App {
             let reply = match res {
                 Ok(json) => format!(r#"{{"type":"probe","data":{json}}}"#),
                 Err(e) => {
-                    eprintln!("[app] probe script failed: {e}");
+                    log_error!("app", "probe script failed: {e}");
                     r#"{"type":"probe","error":"script failed"}"#.to_owned()
                 }
             };
             if let Err(e) = reply_to.reply_json(&reply) {
-                eprintln!("[app] failed to reply probe: {e}");
+                log_error!("app", "failed to reply probe: {e}");
             }
         })
     }
@@ -542,8 +548,9 @@ impl App {
         req: NewWindowRequest,
     ) -> windows_core::Result<()> {
         let decision = NAV_POLICY.classify(req.uri());
-        eprintln!(
-            "[app] new window requested ({:?}, {:?}): {}",
+        log_info!(
+            "app",
+            "new window requested ({:?}, {:?}): {}",
             NEW_WINDOW_POLICY,
             decision,
             req.uri()
@@ -606,7 +613,7 @@ impl App {
     }
 
     fn on_setup_failed(&self, e: windows_core::Error) {
-        eprintln!("[app] failed to setup webview: {e}");
+        log_error!("app", "failed to setup webview: {e}");
         // dropping a PendingNewWindow cancels the request (window.open returns null)
         let initial = self.initial.borrow_mut().take();
         drop(initial);
@@ -730,7 +737,7 @@ impl WindowHandler for App {
             }
             WM_DPICHANGED => {
                 if let Err(e) = mswin::apply_dpi_changed(hwnd, lparam) {
-                    eprintln!("[app] failed to apply dpi change: {e}");
+                    log_error!("app", "failed to apply dpi change: {e}");
                 }
                 Some(LRESULT(0))
             }

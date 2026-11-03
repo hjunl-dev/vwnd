@@ -27,7 +27,11 @@ use windows::Win32::{
 };
 use windows_core::{Error, HSTRING, Interface, PCWSTR, PWSTR, w};
 
-use crate::gui::{com::EventReg, nav::virtual_path};
+use crate::gui::{
+    com::EventReg,
+    log::{log_error, log_warn},
+    nav::virtual_path,
+};
 
 // ============================================================
 // WebViewEnv
@@ -192,7 +196,7 @@ impl WebView {
         match self.ctrl.cast::<ICoreWebView2Controller2>() {
             Ok(ctrl2) => unsafe { ctrl2.SetDefaultBackgroundColor(color) },
             Err(e) => {
-                eprintln!("[webview] ICoreWebView2Controller2 unavailable: {e}");
+                log_warn!("webview", "ICoreWebView2Controller2 unavailable: {e}");
                 Ok(())
             }
         }
@@ -216,7 +220,7 @@ impl WebView {
         let handler =
             AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|res, _id| {
                 if let Err(e) = res {
-                    eprintln!("[webview] failed to add document-created script: {e}");
+                    log_error!("webview", "failed to add document-created script: {e}");
                 }
                 Ok(())
             }));
@@ -259,7 +263,7 @@ impl WebView {
             // Settings3 needs a newer runtime: skip rather than fail on old runtimes
             match settings.cast::<ICoreWebView2Settings3>() {
                 Ok(s3) => s3.SetAreBrowserAcceleratorKeysEnabled(s.browser_accelerator_keys)?,
-                Err(e) => eprintln!("[webview] ICoreWebView2Settings3 unavailable: {e}"),
+                Err(e) => log_warn!("webview", "ICoreWebView2Settings3 unavailable: {e}"),
             }
         }
         Ok(())
@@ -761,7 +765,7 @@ impl Drop for WebViewHost {
         // remove_Xxx...
         self.event_regs.clear();
         if let Err(e) = unsafe { self.view.ctrl.Close() } {
-            eprintln!("[webview] failed to close webview2 controller: {e}");
+            log_error!("webview", "failed to close webview2 controller: {e}");
         }
         // ICoreWebView2 / ICoreWebView2Controller are released by the field drops after this
     }
