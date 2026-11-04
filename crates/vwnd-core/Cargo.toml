@@ -24,4 +24,5 @@ features = [
     "Win32_System_Com",                  # CoInitializeEx, CoCreateInstance
     "Win32_UI_Input_KeyboardAndMouse",   # GetKeyState, VK_* (popup close keys)
     "Win32_UI_Shell",   # ShellExecuteW (mswin::open_external)
+    "Win32_System_Diagnostics_Debug",   # OutputDebugStringW
 ]

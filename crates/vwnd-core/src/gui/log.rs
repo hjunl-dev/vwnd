@@ -1,11 +1,15 @@
 // ============================================================
 // log
 // - one place for diagnostic output, with levels
-// - output: stderr (a windows-subsystem build has none: see the next sink to add)
+// - output: stderr, and OutputDebugStringW (debugger output window / DebugView), which
+//   still works in a windows-subsystem build that has no console
 // - usage: log_info!("app", "opened {uri}") -> "[app] info: opened ..."
 // ============================================================
 
 use std::fmt::Arguments;
+
+use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
+use windows_core::HSTRING;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -38,7 +42,10 @@ pub fn write(level: Level, target: &str, args: Arguments) {
     if level < MIN_LEVEL {
         return;
     }
-    eprintln!("[{target}] {}: {args}", level.as_str());
+    let line = format!("[{target}] {}: {args}", level.as_str());
+    eprintln!("{line}");
+    // the debugger shows the text as-is: end each line with a newline
+    unsafe { OutputDebugStringW(&HSTRING::from(format!("{line}\n"))) };
 }
 
 macro_rules! log_debug {
