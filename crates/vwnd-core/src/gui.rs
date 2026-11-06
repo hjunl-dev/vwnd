@@ -115,8 +115,14 @@ fn app_resource(path: &str) -> Option<EmbeddedResource> {
     };
     match path {
         "/" | "/test.html" => Some(html(demo::TEST_HTML)),
+        "/crash.html" => Some(html(demo::CRASH_HTML)),
         _ => None,
     }
+}
+
+// "/crash.html" -> "https://vwnd.example/crash.html"
+fn app_url(path: &str) -> String {
+    format!("https://{APP_HOST}{path}")
 }
 
 // Which navigations stay in the app (see gui/nav.rs for the rules)
@@ -371,9 +377,7 @@ impl App {
         let initial = self.initial.borrow_mut().take();
         match initial {
             Some(Initial::Start(StartPage::Url(url))) => view.navigate(&url),
-            Some(Initial::Start(StartPage::TestPage)) => {
-                view.navigate(&format!("https://{APP_HOST}/"))
-            }
+            Some(Initial::Start(StartPage::TestPage)) => view.navigate(&app_url("/")),
             Some(Initial::NewWindow(pending)) => pending.complete(&view),
             None => Ok(()),
         }
@@ -480,7 +484,7 @@ impl App {
                     .get()
                     .is_some_and(|t| now.duration_since(t) < RELOAD_COOLDOWN);
                 if looping {
-                    ev.show_html(demo::CRASH_HTML)
+                    ev.navigate(&app_url("/crash.html"))
                 } else {
                     last_reload.set(Some(now));
                     ev.reload()

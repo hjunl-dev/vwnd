@@ -657,9 +657,9 @@ impl ProcessFailedEvent {
         unsafe { self.sender.Reload() }
     }
 
-    /// Replaces the page with the given HTML (renderer failures only).
-    pub fn show_html(&self, html: &str) -> windows_core::Result<()> {
-        unsafe { self.sender.NavigateToString(&HSTRING::from(html)) }
+    /// Navigates the failed WebView elsewhere, e.g. to a crash page (renderer failures only).
+    pub fn navigate(&self, uri: &str) -> windows_core::Result<()> {
+        unsafe { self.sender.Navigate(&HSTRING::from(uri)) }
     }
 }
 

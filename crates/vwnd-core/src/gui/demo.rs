@@ -106,6 +106,7 @@ pub const TEST_HTML: &str = r#"<!doctype html>
 </body></html>"#;
 
 /// Shown when the renderer fails again right after a reload (see RELOAD_COOLDOWN).
+/// Served at https://APP_HOST/crash.html.
 pub const CRASH_HTML: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>Page crashed</title>
 <style>
