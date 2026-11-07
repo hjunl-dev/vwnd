@@ -77,6 +77,10 @@ pub const TEST_HTML: &str = r#"<!doctype html>
   <button onclick="document.documentElement.requestFullscreen()
     .then(() => log('fullscreen: on (Esc to leave)'), (e) => log('fullscreen: ' + e.name))">fullscreen</button>
 
+  <h3>Downloads</h3>
+  <a href="/hello.txt" download>download hello.txt</a>
+  <small>(cancelled unless ALLOW_DOWNLOADS)</small>
+
   <h3>Navigation</h3>
   <a href="https://www.google.com/">google.com</a> ·
   <a href="https://example.com/">example.com</a> ·

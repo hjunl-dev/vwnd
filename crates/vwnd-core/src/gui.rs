@@ -21,10 +21,10 @@ use crate::gui::{
     mswin::{WindowClass, WindowHandler},
     nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
     webview::{
-        AcceleratorKey, EmbeddedResource, NavErrorKind, NavigationCompletedEvent, NewWindowRequest,
-        PendingNewWindow, PermissionKind, PermissionRequest, ProcessFailedEvent, ProcessFailure,
-        WebMessage, WebView, WebViewBackground, WebViewEnv, WebViewEnvOptions, WebViewHost,
-        WebViewSettings,
+        AcceleratorKey, DownloadRequest, EmbeddedResource, NavErrorKind, NavigationCompletedEvent,
+        NewWindowRequest, PendingNewWindow, PermissionKind, PermissionRequest, ProcessFailedEvent,
+        ProcessFailure, WebMessage, WebView, WebViewBackground, WebViewEnv, WebViewEnvOptions,
+        WebViewHost, WebViewSettings,
     },
 };
 
@@ -116,6 +116,11 @@ fn app_resource(path: &str) -> Option<EmbeddedResource> {
     match path {
         "/" | "/test.html" => Some(html(demo::TEST_HTML)),
         "/crash.html" => Some(html(demo::CRASH_HTML)),
+        // a file to try the download policy with (the test page links it with `download`)
+        "/hello.txt" => Some(EmbeddedResource {
+            mime: "text/plain; charset=utf-8",
+            body: b"hello from vwnd\n",
+        }),
         _ => None,
     }
 }
@@ -151,6 +156,11 @@ const BRIDGE_POLICY: BridgePolicy<'static> = BridgePolicy {
 // - everything else is denied: no WebView2 prompt, the page just gets "denied"
 const ALLOWED_PERMISSIONS: &[PermissionKind] = &[];
 // const ALLOWED_PERMISSIONS: &[PermissionKind] = &[PermissionKind::ClipboardRead];
+
+// Downloads (a link with `download`, a file type the page can't show, ...)
+// - false: every download is cancelled before anything is written (logged)
+// - true: WebView2's default: its download UI, saved to the user's Downloads folder
+const ALLOW_DOWNLOADS: bool = false;
 
 // Keyboard shortcuts that close a popup window (the main window has none)
 // - Ctrl+W / Ctrl+F4: like closing a browser tab
@@ -346,6 +356,8 @@ impl App {
         host.set_on_navigation_completed(App::handle_navigation_completed)?;
         // set permission requested callback (deny unless allowed)
         host.set_on_permission_requested(App::handle_permission_requested)?;
+        // set download starting callback (see ALLOW_DOWNLOADS)
+        host.set_on_download_starting(App::handle_download_starting)?;
         // HTML fullscreen: the window covers its monitor while the page is fullscreen
         let windowed = Cell::new(None);
         host.set_on_fullscreen_changed(move |fullscreen| {
@@ -415,6 +427,29 @@ impl App {
             vk == u32::from(b'W') || vk == u32::from(VK_F4.0)
         } else {
             POPUP_CLOSE_ON_ESC && vk == u32::from(VK_ESCAPE.0)
+        }
+    }
+
+    fn handle_download_starting(req: DownloadRequest) {
+        let size = req
+            .total_bytes()
+            .map_or("unknown size".to_owned(), |n| format!("{n} bytes"));
+        log_info!(
+            "app",
+            "download {} ({}, {size}): {} -> {}",
+            if ALLOW_DOWNLOADS {
+                "allowed"
+            } else {
+                "cancelled"
+            },
+            req.mime_type(),
+            req.uri(),
+            req.result_file_path()
+        );
+        if ALLOW_DOWNLOADS {
+            req.allow();
+        } else if let Err(e) = req.cancel() {
+            log_error!("app", "failed to cancel download: {e}");
         }
     }
 

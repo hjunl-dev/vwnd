@@ -4,7 +4,7 @@ use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
     ContainsFullScreenElementChangedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler,
+    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
     Microsoft::Web::WebView2::Win32 as wv2,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_COLOR, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
@@ -547,6 +547,49 @@ impl NavigationCompletedEvent {
 }
 
 // ============================================================
+// DownloadStarting
+// - passed to the DownloadStarting callback
+// - dropping the request without a decision = WebView2's default
+//   (its download UI, saved to the user's Downloads folder)
+// ============================================================
+
+pub struct DownloadRequest {
+    args: wv2::ICoreWebView2DownloadStartingEventArgs,
+    uri: String,
+    mime_type: String,
+    total_bytes: Option<i64>,
+    result_file_path: String,
+}
+
+impl DownloadRequest {
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    pub fn mime_type(&self) -> &str {
+        &self.mime_type
+    }
+
+    /// From Content-Length; None when the server didn't say
+    pub fn total_bytes(&self) -> Option<i64> {
+        self.total_bytes
+    }
+
+    /// Where WebView2 would save it (the Downloads folder by default)
+    pub fn result_file_path(&self) -> &str {
+        &self.result_file_path
+    }
+
+    /// Let WebView2 handle it as usual (same as dropping the request)
+    pub fn allow(self) {}
+
+    /// Stop the download; nothing is written to disk
+    pub fn cancel(self) -> windows_core::Result<()> {
+        unsafe { self.args.SetCancel(true) }
+    }
+}
+
+// ============================================================
 // PermissionRequested
 // - passed to the PermissionRequested callback (camera, microphone, location, ...)
 // - dropping the request without a decision = WebView2's default (its own prompt)
@@ -1058,6 +1101,54 @@ impl WebViewHost {
         self.track(move |wv| {
             let _ = unsafe { wv.remove_NavigationCompleted(token) };
         });
+        Ok(())
+    }
+
+    /// A download is about to start. ICoreWebView2_4 needs a newer runtime: on an old one
+    /// this logs and registers nothing, so downloads keep WebView2's default behavior.
+    pub fn set_on_download_starting(
+        &mut self,
+        cb: impl Fn(DownloadRequest) + 'static,
+    ) -> windows_core::Result<()> {
+        let wv4 = match self.view.wv.cast::<wv2::ICoreWebView2_4>() {
+            Ok(wv4) => wv4,
+            Err(e) => {
+                log_warn!("webview", "ICoreWebView2_4 unavailable (downloads): {e}");
+                return Ok(());
+            }
+        };
+        let handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let op = unsafe { args.DownloadOperation()? };
+            let mut raw = PWSTR::null();
+            unsafe { op.Uri(&mut raw)? };
+            let uri = take_pwstr(raw);
+            let mut raw = PWSTR::null();
+            unsafe { op.MimeType(&mut raw)? };
+            let mime_type = take_pwstr(raw);
+            let mut total = -1i64;
+            unsafe { op.TotalBytesToReceive(&mut total)? };
+            let mut raw = PWSTR::null();
+            unsafe { args.ResultFilePath(&mut raw)? };
+            let result_file_path = take_pwstr(raw);
+            cb(DownloadRequest {
+                args,
+                uri,
+                mime_type,
+                // -1 = unknown size
+                total_bytes: (total >= 0).then_some(total),
+                result_file_path,
+            });
+            Ok(())
+        }));
+
+        let mut token = Default::default();
+        unsafe { wv4.add_DownloadStarting(&handler, &mut token)? };
+        self.event_regs.push(EventReg::new(move || {
+            let _ = unsafe { wv4.remove_DownloadStarting(token) };
+        }));
         Ok(())
     }
 
