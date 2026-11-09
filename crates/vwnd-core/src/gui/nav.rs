@@ -97,6 +97,20 @@ impl BridgePolicy<'_> {
     }
 }
 
+/// Percent-encodes a value for a URL query (everything but A-Z a-z 0-9 - _ . ~),
+/// e.g. to pass a URI as `?uri=...`. UTF-8 bytes are encoded one by one.
+pub fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 /// Path part of an `https://<host>/...` URI, for serving that host from the app:
 /// "https://Vwnd.example/a/b?x#y" with host "vwnd.example" -> "/a/b" ("" -> "/").
 /// None for another scheme or host; a port or userinfo also means "not ours".
@@ -317,6 +331,18 @@ mod tests {
             ..BRIDGE
         };
         assert!(!strict.trusts("about:blank"));
+    }
+
+    #[test]
+    fn percent_encode_keeps_unreserved_and_encodes_the_rest() {
+        assert_eq!(percent_encode("aZ09-_.~"), "aZ09-_.~");
+        assert_eq!(
+            percent_encode("https://x.y/a?b=1&c=d e#f"),
+            "https%3A%2F%2Fx.y%2Fa%3Fb%3D1%26c%3Dd%20e%23f"
+        );
+        assert_eq!(percent_encode("<script>+"), "%3Cscript%3E%2B");
+        assert_eq!(percent_encode("한"), "%ED%95%9C");
+        assert_eq!(percent_encode(""), "");
     }
 
     #[test]

@@ -540,9 +540,9 @@ impl NavigationCompletedEvent {
         self.error
     }
 
-    /// Replaces the page with the given HTML (e.g. the app's own error page).
-    pub fn show_html(&self, html: &str) -> windows_core::Result<()> {
-        unsafe { self.sender.NavigateToString(&HSTRING::from(html)) }
+    /// Navigates the WebView elsewhere, e.g. to the app's own error page.
+    pub fn navigate(&self, uri: &str) -> windows_core::Result<()> {
+        unsafe { self.sender.Navigate(&HSTRING::from(uri)) }
     }
 }
 

@@ -19,7 +19,7 @@ use crate::gui::{
     com::ComApartment,
     log::{log_debug, log_error, log_info, log_warn},
     mswin::{WindowClass, WindowHandler},
-    nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url},
+    nav::{BridgePolicy, NavDecision, NavPolicy, normalize_user_url, percent_encode},
     webview::{
         AcceleratorKey, DownloadRequest, EmbeddedResource, NavErrorKind, NavigationCompletedEvent,
         NewWindowRequest, PendingNewWindow, PermissionKind, PermissionRequest, ProcessFailedEvent,
@@ -116,6 +116,8 @@ fn app_resource(path: &str) -> Option<EmbeddedResource> {
     match path {
         "/" | "/test.html" => Some(html(demo::TEST_HTML)),
         "/crash.html" => Some(html(demo::CRASH_HTML)),
+        // ?uri=...&status=... is read by the page itself
+        "/error.html" => Some(html(demo::ERROR_HTML)),
         // a file to try the download policy with (the test page links it with `download`)
         "/hello.txt" => Some(EmbeddedResource {
             mime: "text/plain; charset=utf-8",
@@ -491,7 +493,12 @@ impl App {
         if !matches!(err.kind, NavErrorKind::Network | NavErrorKind::Certificate) {
             return;
         }
-        if let Err(e) = ev.show_html(&demo::error_page_html(ev.uri(), err.status)) {
+        let error_page = app_url(&format!(
+            "/error.html?uri={}&status={}",
+            percent_encode(ev.uri()),
+            percent_encode(err.status)
+        ));
+        if let Err(e) = ev.navigate(&error_page) {
             log_error!("app", "failed to show error page: {e}");
         }
     }
